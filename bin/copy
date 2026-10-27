@@ -13,6 +13,9 @@ context to the cache again.
 
 Herdr runs this script in a popup over the pane where the key was pressed.
 The popup gives the picker the keys, and that pane gives it the agent.
+
+The * key types the shell blocks into a free shell of the tab, as a run of
+steps: bin/running.py says how.
 """
 
 import base64
@@ -32,6 +35,7 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import api
 import prompting
+import running
 import sessions
 
 # a block in a list item takes the indent of the item, and a block closes
@@ -72,9 +76,10 @@ ENDS = {'g': 0, 'KEY_HOME': 0, 'G': -1, 'KEY_END': -1}
 TURNS = {'n': 1, 'KEY_RIGHT': 1, 'p': -1, 'KEY_LEFT': -1}
 SCROLLS = {'\x04': 1, 'KEY_NPAGE': 1, '\x15': -1, 'KEY_PPAGE': -1}
 COPY = ('\n', '\r', 'KEY_ENTER')
-TO_RUN = {'!': 'claude', '$': 'shell'}
+TO_RUN = {'!': 'claude', '$': 'shell', '*': 'run'}
 QUIT = ('q', '\x1b')
-FOOTER = 'enter copy · ! for Claude · $ for a shell · space mark · a all · ? help · q quit'
+FOOTER = ('enter copy · ! for Claude · $ for a shell · * for a run · space mark'
+          ' · a all · ? help · q quit')
 HELP = (
     ('j  k', 'next or previous block'),
     ('Tab  S-Tab', 'next or previous block of code'),
@@ -84,6 +89,7 @@ HELP = (
     ('Enter', 'copy the selection as written, else the block at the cursor'),
     ('!', 'copy its code to run in Claude, and put it in the prompt box'),
     ('$', 'copy its code to run in a shell: no ! at all'),
+    ('*', 'put its shell code in a free shell of the tab, as a run of steps'),
     ('A', 'copy the whole answer as written, and quit'),
     ('p  n', 'previous or next answer'),
     ('C-d  C-u', 'scroll half a page'),
@@ -94,7 +100,9 @@ HELP = (
     ('', 'A selection with prose is copied as markdown, fences included.'),
     ('!  $', 'Only the blocks of code of the selection, and never its prose.'),
     ('', '! puts one ! in front of them all, and $ none at all.'),
-    ('', '! leaves out a block that is not shell, and says so.'),
+    ('', '! and * leave out a block that is not shell, and say so.'),
+    ('*', 'Enter in that shell starts the run, a step per block.'),
+    ('', 'Each step keeps its output in a directory of its own.'),
     ('a  !', 'Every shell command of the answer, in the prompt box of Claude.'),
     ('a  $', 'Every block of code of the answer, for a shell.'),
     ('', 'Space after a takes a block out of either.'),
@@ -388,12 +396,14 @@ def commands(state, page):
 
 
 def prepared(done, state, page):
-    """The text that a key copies, and what it is called.
+    """What a key copies or runs, and what it is called.
 
-    Enter copies the selection as written. The two other keys copy its code
-    alone, one block after the other, to run: in Claude behind a single !,
-    or in another shell with no ! at all. Claude hands its code to bash, so
-    ! leaves out a block in another language, as it leaves out the prose.
+    Enter copies the selection as written. ! and $ copy its code alone, one
+    block after the other, to run: in Claude behind a single !, or in another
+    shell with no ! at all. * keeps the blocks apart, a list of them, since
+    each block runs as a step of its own. Claude and a run hand their code to
+    a shell, so ! and * leave out a block in another language, as they leave
+    out the prose.
     """
     if done == 'copy':
         return selection(state, page)
@@ -401,22 +411,26 @@ def prepared(done, state, page):
     if not code:
         raise Refused('no block of code in the selection')
     left = []
-    if done == 'claude':
+    if done in ('claude', 'run'):
         left = [block for block in code if block['lang'] not in SHELLS]
         code = [block for block in code if block['lang'] in SHELLS]
         if not code:
-            raise Refused('Claude runs shell code, not '
+            raise Refused(('Claude' if done == 'claude' else 'a shell')
+                          + ' runs shell code, not '
                           + ', '.join(sorted({block['lang'] for block in left})))
-    text = BANG.sub('', '\n'.join(block['text'] for block in code)).strip('\n')
     what = f'{len(code)} blocks' if len(code) > 1 \
         else f"the {code[0]['lang'] or 'code'} block"
-    if done == 'shell':
-        return text, f'{what} for a shell'
-    what += ' for Claude'
+    out = ''
     if left:
         langs = '/'.join(sorted({block['lang'] for block in left}))
-        what += f", {len(left)} {langs} block{'s' if len(left) > 1 else ''} left out"
-    return '!' + text, what
+        out = f", {len(left)} {langs} block{'s' if len(left) > 1 else ''} left out"
+    if done == 'run':
+        return ([BANG.sub('', block['text']).strip('\n') for block in code],
+                f'{what} in the free shell{out}')
+    text = BANG.sub('', '\n'.join(block['text'] for block in code)).strip('\n')
+    if done == 'shell':
+        return text, f'{what} for a shell'
+    return '!' + text, f'{what} for Claude{out}'
 
 
 def said(what, text):
@@ -703,7 +717,7 @@ def pick(book):
             if key == '\x0c':
                 screen.clear()
             state, done = step(dict(state, said=''), key, book, body)
-            if done in ('copy', 'claude', 'shell'):
+            if done in ('copy', *TO_RUN.values()):
                 try:
                     return (done, *prepared(done, state, book[state['page']]))
                 except Refused as why:
@@ -746,6 +760,30 @@ def refuse(why):
     return 1
 
 
+def launch(agent, blocks, what):
+    """Type the run of the blocks into the free shell of the tab of the agent,
+    without the Enter that starts it, or say why not.
+
+    The shell is looked for once the picker has closed, since its command may
+    have ended while the picker was open. The control characters come out
+    before the check: with one at its end, a line that ends the run would pass.
+    """
+    blocks = [CONTROLS.sub('', block) for block in blocks]
+    try:
+        running.check(blocks)
+        shell, name = running.free_shell(api.panes(), agent, prompting.standing())
+    except running.NoRun as why:
+        return refuse(str(why))
+    run = running.prepare(agent, shell, name)
+    api.call('pane', 'send_text', pane_id=shell['pane_id'],
+             text=PASTE.format(running.typed(run, blocks)))
+    api.call('pane', 'focus', pane_id=shell['pane_id'])
+    line = f'typed {what}, press Enter there to start the run in {run}'
+    print(line)
+    api.call('notification', 'show', title='copy', body=line, sound='none')
+    return 0
+
+
 def main():
     panes = api.panes()
     pane = prompting.target(panes, prompting.standing())
@@ -770,6 +808,8 @@ def main():
     if not picked:
         return 0
     done, text, what = picked
+    if done == 'run':
+        return launch(pane, text, what)
     clip(text)
     line = said(what, text)
     if done == 'claude':
