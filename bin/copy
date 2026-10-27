@@ -1,0 +1,785 @@
+#!/usr/bin/python3
+"""Show Claude's last answers block by block, and copy the blocks you pick.
+
+A copy from the screen is a copy of the grid. Claude draws a code block two
+columns in, and wraps it at the width of the pane, so a copied block keeps
+that indent and a break inside each long line. The transcript holds each
+answer as Claude wrote it, so the picker reads the answers there and copies
+the markdown of a block, or the content of a code block, as written.
+
+The script never types /copy into Claude. A /copy makes Claude send a
+recap a few minutes later, and on a cold cache that recap writes the whole
+context to the cache again.
+
+Herdr runs this script in a popup over the pane where the key was pressed.
+The popup gives the picker the keys, and that pane gives it the agent.
+"""
+
+import base64
+import curses
+import json
+import os
+import re
+import sys
+
+try:
+    import pygments.lexers
+    import pygments.token
+    import pygments.util
+except ImportError:
+    pygments = None
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import api
+import prompting
+import sessions
+
+# a block in a list item takes the indent of the item, and a block closes
+# on a run of its opening mark, at least as long
+FENCE = re.compile(r'^( *)(`{3,}|~{3,})(.*)$')
+HEADING = re.compile(r'^ {0,3}#{1,6}\s')
+ITEM = re.compile(r'^(\s*(?:[-*+]|\d+[.)])\s+)')
+# a list may start right under the line that announces it, with no blank
+# line between, as long as it opens on a bullet or on 1
+LEAD = re.compile(r'^ {0,3}(?:[-*+]|1[.)])\s')
+INLINE = re.compile(r'`([^`]+)`|\*\*([^*]+)\*\*')
+TAG = re.compile(r'<[^>]*>')
+COMMAND = re.compile(r'<command-name>(.*?)</command-name>')
+# the mark that makes Claude Code run a line in its shell. Claude writes it
+# as a ! and a space, at times as a ! alone. A line that opened on the
+# negation of bash would lose it too, and Claude almost never writes one.
+BANG = re.compile(r'^![ \t]*', re.MULTILINE)
+SHELLS = ('', 'sh', 'bash', 'zsh', 'shell')
+# the markers of a paste: inside them, a newline is text, and not the Enter
+# that would send the first line alone
+PASTE = '\033[200~{}\033[201~'
+# what a paste must not carry, since Herdr sends it as it is: an escape
+# could close the paste early, and the newline after it would send the line
+CONTROLS = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+SHELL_INPUT = re.compile(r'<bash-input>(.*?)</bash-input>', re.DOTALL)
+# what Claude Code records after a local command or a ! command: the end of
+# the turn that the command opened, not a prompt of its own
+OUTPUTS = ('<bash-stdout>', '<bash-stderr>', '<local-command-stdout>',
+           '<local-command-stderr>')
+
+TAIL = 4 << 20      # a transcript can pass 40 MB, and the picker shows its last answers
+GUTTER = 7          # the row number, the bar of the cursor, and a space each
+
+MOVES = {'j': 1, 'KEY_DOWN': 1, 'k': -1, 'KEY_UP': -1}
+CODE = {'\t': 1, 'KEY_BTAB': -1}
+ENDS = {'g': 0, 'KEY_HOME': 0, 'G': -1, 'KEY_END': -1}
+TURNS = {'n': 1, 'KEY_RIGHT': 1, 'p': -1, 'KEY_LEFT': -1}
+SCROLLS = {'\x04': 1, 'KEY_NPAGE': 1, '\x15': -1, 'KEY_PPAGE': -1}
+COPY = ('\n', '\r', 'KEY_ENTER')
+TO_RUN = {'!': 'claude', '$': 'shell'}
+QUIT = ('q', '\x1b')
+FOOTER = 'enter copy · ! for Claude · $ for a shell · space mark · a all · ? help · q quit'
+HELP = (
+    ('j  k', 'next or previous block'),
+    ('Tab  S-Tab', 'next or previous block of code'),
+    ('g  G', 'first or last block'),
+    ('Space', 'mark the block at the cursor, for a copy of several'),
+    ('a', 'mark every block, or unmark them all'),
+    ('Enter', 'copy the selection as written, else the block at the cursor'),
+    ('!', 'copy its code to run in Claude, and put it in the prompt box'),
+    ('$', 'copy its code to run in a shell: no ! at all'),
+    ('A', 'copy the whole answer as written, and quit'),
+    ('p  n', 'previous or next answer'),
+    ('C-d  C-u', 'scroll half a page'),
+    ('?', 'this help'),
+    ('q  Esc', 'quit with no copy'),
+    ('', ''),
+    ('Enter', 'Blocks of code alone are copied as their content, ready to run.'),
+    ('', 'A selection with prose is copied as markdown, fences included.'),
+    ('!  $', 'Only the blocks of code of the selection, and never its prose.'),
+    ('', '! puts one ! in front of them all, and $ none at all.'),
+    ('', '! leaves out a block that is not shell, and says so.'),
+    ('a  !', 'Every shell command of the answer, in the prompt box of Claude.'),
+    ('a  $', 'Every block of code of the answer, for a shell.'),
+    ('', 'Space after a takes a block out of either.'),
+    ('', ''),
+    ('', 'Any key closes this help.'),
+)
+
+ITALIC = getattr(curses, 'A_ITALIC', 0)
+BOLD = curses.A_BOLD
+# the palette in 256 colours: (foreground, background, attribute).
+# The text on the pane, the prompt on a ground of its own, the code on the dark
+# ground of its panel. A style that ends in -cursor, -mark or -both replaces
+# its base in the block at the cursor, in a marked block, or in a marked block
+# at the cursor: orange, mauve, and red, so that a mark under the cursor shows.
+STYLES = {
+    'text': (-1, -1, 0), 'bold': (-1, -1, BOLD), 'inline': (151, -1, 0),
+    'heading': (183, -1, BOLD), 'quote': (245, -1, ITALIC),
+    'text-cursor': (-1, 237, 0), 'bold-cursor': (-1, 237, BOLD),
+    'inline-cursor': (151, 237, 0), 'heading-cursor': (183, 237, BOLD),
+    'quote-cursor': (245, 237, ITALIC),
+    'title': (-1, -1, BOLD), 'help': (242, -1, 0), 'help-key': (216, -1, BOLD),
+    'warn': (211, -1, BOLD),
+    'prompt': (189, 238, 0), 'prompt-more': (245, 238, ITALIC),
+    'gutter': (242, -1, 0), 'gutter-cursor': (216, -1, BOLD),
+    'gutter-mark': (183, -1, BOLD), 'gutter-both': (211, -1, BOLD),
+    'bar-cursor': (216, -1, 0), 'bar-mark': (183, -1, 0), 'bar-both': (211, -1, 0),
+    'head': (245, 238, 0), 'head-number': (189, 238, BOLD),
+    'head-cursor': (236, 216, 0), 'head-number-cursor': (236, 216, BOLD),
+    'head-mark': (236, 183, 0), 'head-number-mark': (236, 183, BOLD),
+    'head-both': (236, 211, 0), 'head-number-both': (236, 211, BOLD),
+    'code': (189, 236, 0), 'keyword': (183, 236, 0), 'string': (151, 236, 0),
+    'comment': (242, 236, ITALIC), 'literal': (216, 236, 0),
+    'builtin': (111, 236, 0), 'variable': (211, 236, 0), 'operator': (117, 236, 0),
+}
+# the same, on a terminal of eight colours
+BASIC = {151: curses.COLOR_GREEN, 183: curses.COLOR_MAGENTA, 216: curses.COLOR_YELLOW,
+         111: curses.COLOR_BLUE, 211: curses.COLOR_RED, 117: curses.COLOR_CYAN,
+         189: curses.COLOR_WHITE, 245: curses.COLOR_WHITE, 242: curses.COLOR_WHITE,
+         236: curses.COLOR_BLACK, 237: curses.COLOR_BLACK, 238: curses.COLOR_BLACK}
+TOKENS = (('Comment', 'comment'), ('Keyword', 'keyword'),
+          ('Name.Builtin', 'builtin'), ('Name.Function', 'builtin'),
+          ('Name.Variable', 'variable'), ('Literal.String', 'string'),
+          ('Literal.Number', 'literal'), ('Operator', 'operator'))
+
+
+def first_line(text):
+    return next((line.strip() for line in text.splitlines() if line.strip()), '')
+
+
+def _prompt(content):
+    """The prompt as it was typed: a command with its arguments, and any
+    other text without the tags that Claude Code wraps around it."""
+    if isinstance(content, list):
+        content = '\n'.join(
+            block.get('text') or '' if block.get('type') == 'text' else '[image]'
+            for block in content if isinstance(block, dict))
+    content = content or ''
+    command = COMMAND.search(content)
+    if command:
+        args = ARGS.search(content)
+        return f"{command.group(1)} {args.group(1) if args else ''}".strip()
+    shell = SHELL_INPUT.search(content)
+    if shell:
+        return '! ' + shell.group(1).strip()
+    return TAG.sub('', content).strip('\n')
+
+
+def _tool_result(content):
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get('type') == 'tool_result'
+        for block in content)
+
+
+def _output(content):
+    return isinstance(content, str) and content.lstrip().startswith(OUTPUTS)
+
+
+def answers(path):
+    """The answers of a session, oldest first, each with the prompt it follows.
+
+    An answer is one message of Claude, as Claude's own /copy takes it. A
+    turn that runs tools holds several: a few words between two tools, and
+    the answer at the end. The records of one message share its id.
+
+    Each user record opens a turn, unless it is a tool result, the output of
+    a command, or a record that Claude Code adds itself. A local command also
+    opens a turn, but Claude writes nothing in it.
+
+    Only the tail of the transcript is read. If the start of the tail cuts
+    a turn, the answers of that turn are left out with its prompt.
+    """
+    try:
+        with open(path, 'rb') as fp:
+            fp.seek(0, 2)
+            size = fp.tell()
+            fp.seek(max(0, size - TAIL))
+            lines = fp.readlines()
+    except (OSError, TypeError):
+        return []
+    if size > TAIL:
+        lines = lines[1:]
+    found, prompt, last = [], None, None
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get('isSidechain'):
+            continue
+        message = record.get('message') or {}
+        content = message.get('content')
+        if record.get('type') == 'user':
+            if not record.get('isMeta') and not record.get('isCompactSummary') \
+                    and not _tool_result(content) and not _output(content):
+                prompt, last = _prompt(content), None
+        elif record.get('type') == 'assistant' and prompt is not None \
+                and isinstance(content, list):
+            texts = [block['text'] for block in content
+                     if isinstance(block, dict) and block.get('type') == 'text'
+                     and block.get('text')]
+            if not texts:
+                continue
+            if found and last is not None and last == message.get('id'):
+                found[-1]['texts'].extend(texts)
+            else:
+                found.append({'prompt': prompt, 'texts': texts})
+            last = message.get('id')
+    return [{'prompt': answer['prompt'], 'text': '\n\n'.join(answer['texts'])}
+            for answer in found]
+
+
+def _dedent(line, width):
+    return line[min(width, len(line) - len(line.lstrip(' '))):]
+
+
+def blocks(text):
+    """The blocks of an answer in their order: each fenced block of code, and
+    the markdown around them, cut at its blank lines and at its headings.
+
+    A list keeps the blank lines between its items and stays one block. The
+    indent of an opening fence belongs to the list item that holds the code,
+    so the same indent comes off each line of the code.
+    """
+    found, chunk, lines, i = [], [], text.split('\n'), 0
+
+    def close():
+        if not chunk:
+            return
+        first = chunk[0].lstrip()
+        kind = 'list' if ITEM.match(chunk[0]) else 'table' if first.startswith('|') \
+            else 'quote' if first.startswith('>') else 'paragraph'
+        source = '\n'.join(chunk)
+        last = found[-1] if found else None
+        if last and last['kind'] == 'list' \
+                and (kind == 'list' or chunk[0].startswith('  ')):
+            last['source'] = last['text'] = last['source'] + '\n\n' + source
+        else:
+            found.append({'kind': kind, 'lang': '', 'indent': 0,
+                          'source': source, 'text': source})
+        chunk.clear()
+
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        opening = FENCE.match(line)
+        if opening:
+            close()
+            indent, mark, info = opening.groups()
+            body, fenced = [], [line]
+            while i < len(lines):
+                closing = FENCE.match(lines[i])
+                fenced.append(lines[i])
+                i += 1
+                if closing and closing.group(2)[0] == mark[0] \
+                        and len(closing.group(2)) >= len(mark) \
+                        and not closing.group(3).strip():
+                    break
+                body.append(_dedent(lines[i - 1], len(indent)))
+            found.append({
+                'kind': 'code', 'lang': (info.split() or [''])[0],
+                'indent': len(indent), 'text': '\n'.join(body),
+                'source': '\n'.join(_dedent(row, len(indent)) for row in fenced)})
+        elif not line.strip():
+            close()
+        elif HEADING.match(line):
+            close()
+            found.append({'kind': 'heading', 'lang': '', 'indent': 0,
+                          'source': line, 'text': line})
+        else:
+            if chunk and LEAD.match(line) and not ITEM.match(chunk[0]):
+                close()
+            chunk.append(line)
+    close()
+    return found
+
+
+def pages(path):
+    """What the picker pages through: each answer and its blocks."""
+    return [dict(answer, blocks=blocks(answer['text'])) for answer in answers(path)]
+
+
+def start(book, page):
+    """An answer as it opens: the cursor on its first block of code, if any."""
+    found = book[page]['blocks']
+    cursor = next((i for i, block in enumerate(found) if block['kind'] == 'code'), 0)
+    return {'page': page, 'cursor': cursor, 'marked': frozenset(),
+            'top': 0, 'follow': True, 'help': False, 'said': ''}
+
+
+def opened(book):
+    return start(book, len(book) - 1)
+
+
+def step(state, key, book, height=20):
+    """Apply one key: the new state, and 'copy' or 'quit' if it ends the picker.
+
+    A key that closes the help does nothing else, so a q read there quits
+    nothing.
+    """
+    if state['help']:
+        return dict(state, help=False), None
+    if key == '?':
+        return dict(state, help=True), None
+    found = book[state['page']]['blocks']
+    if key in MOVES:
+        cursor = max(0, min(len(found) - 1, state['cursor'] + MOVES[key]))
+        return dict(state, cursor=cursor, follow=True), None
+    if key in CODE:
+        way = CODE[key]
+        ahead = range(state['cursor'] + way, len(found) if way > 0 else -1, way)
+        cursor = next((i for i in ahead if found[i]['kind'] == 'code'),
+                      state['cursor'])
+        return dict(state, cursor=cursor, follow=True), None
+    if key in ENDS:
+        return dict(state, cursor=ENDS[key] % len(found), follow=True), None
+    if key in TURNS:
+        page = max(0, min(len(book) - 1, state['page'] + TURNS[key]))
+        return (state if page == state['page'] else start(book, page)), None
+    if key in SCROLLS:
+        top = max(0, state['top'] + SCROLLS[key] * max(1, height // 2))
+        return dict(state, top=top, follow=False), None
+    if key == ' ':
+        return dict(state, marked=state['marked'] ^ {state['cursor']}), None
+    every = frozenset(range(len(found)))
+    if key == 'a':
+        return dict(state, marked=frozenset() if state['marked'] == every
+                    else every), None
+    if key == 'A':
+        return dict(state, marked=every), 'copy'
+    if key in COPY:
+        return state, 'copy'
+    if key in TO_RUN:
+        return state, TO_RUN[key]
+    if key in QUIT:
+        return state, 'quit'
+    return state, None
+
+
+def selection(state, page):
+    """The text to copy, and what it is called.
+
+    If every block of an answer of several is marked, the copy is the answer
+    as written. If the selection holds blocks of code only, the copy is their
+    content, ready to run. If it also holds prose, the copy is an extract of
+    the answer, and each block keeps its markdown, fences included.
+    """
+    found = page['blocks']
+    if len(found) > 1 and len(state['marked']) == len(found):
+        return page['text'], 'the whole answer'
+    picked = [found[i] for i in sorted(state['marked'])] or [found[state['cursor']]]
+    if all(block['kind'] == 'code' for block in picked):
+        text = '\n'.join(block['text'] for block in picked)
+    else:
+        text = '\n\n'.join(block['source'] for block in picked)
+    if len(picked) > 1:
+        return text, f'{len(picked)} blocks'
+    if picked[0]['kind'] == 'code':
+        return text, f"the {picked[0]['lang'] or 'code'} block"
+    return text, f"a {picked[0]['kind']}"
+
+
+class Refused(Exception):
+    """Why a key copied nothing, in the words that the picker shows."""
+
+
+def commands(state, page):
+    """The blocks of code in the selection, in the order of the answer."""
+    found = page['blocks']
+    picked = sorted(state['marked']) or [state['cursor']]
+    return [found[i] for i in picked if found[i]['kind'] == 'code']
+
+
+def prepared(done, state, page):
+    """The text that a key copies, and what it is called.
+
+    Enter copies the selection as written. The two other keys copy its code
+    alone, one block after the other, to run: in Claude behind a single !,
+    or in another shell with no ! at all. Claude hands its code to bash, so
+    ! leaves out a block in another language, as it leaves out the prose.
+    """
+    if done == 'copy':
+        return selection(state, page)
+    code = commands(state, page)
+    if not code:
+        raise Refused('no block of code in the selection')
+    left = []
+    if done == 'claude':
+        left = [block for block in code if block['lang'] not in SHELLS]
+        code = [block for block in code if block['lang'] in SHELLS]
+        if not code:
+            raise Refused('Claude runs shell code, not '
+                          + ', '.join(sorted({block['lang'] for block in left})))
+    text = BANG.sub('', '\n'.join(block['text'] for block in code)).strip('\n')
+    what = f'{len(code)} blocks' if len(code) > 1 \
+        else f"the {code[0]['lang'] or 'code'} block"
+    if done == 'shell':
+        return text, f'{what} for a shell'
+    what += ' for Claude'
+    if left:
+        langs = '/'.join(sorted({block['lang'] for block in left}))
+        what += f", {len(left)} {langs} block{'s' if len(left) > 1 else ''} left out"
+    return '!' + text, what
+
+
+def said(what, text):
+    count = text.count('\n') + 1
+    return f"copied {what}, {count} line{'s' if count > 1 else ''}"
+
+
+def clip(text, terminal=None):
+    """Herdr turns an OSC 52 sequence of a pane into a clipboard write, so the
+    copy needs no clipboard tool."""
+    terminal = terminal or sys.stdout
+    terminal.write('\033]52;c;' + base64.b64encode(text.encode()).decode() + '\a')
+    terminal.flush()
+
+
+def spans(line, base='text'):
+    """A line of markdown as runs of styled text, without the marks."""
+    out, at = [], 0
+    for found in INLINE.finditer(line):
+        if found.start() > at:
+            out.append((line[at:found.start()], base))
+        if found.group(1) is not None:
+            out.append((found.group(1), 'inline'))
+        else:
+            out.extend(spans(found.group(2), 'bold'))
+        at = found.end()
+    if at < len(line):
+        out.append((line[at:], base))
+    return out
+
+
+def wrap(runs, width, hang=0):
+    """Rows of at most width columns, cut between words.
+
+    The rows after the first start hang columns in, under the text of a list
+    item rather than under its mark.
+    """
+    rows, row, used = [], [], 0
+    for text, style in runs:
+        for word in re.findall(r'\s*\S+|\s+', text):
+            if used > hang and used + len(word) > width:
+                rows.append(row)
+                row, used, word = [(' ' * hang, style)], hang, word.lstrip()
+            while used + len(word) > width:
+                room = max(1, width - used)
+                row.append((word[:room], style))
+                rows.append(row)
+                row, used, word = [(' ' * hang, style)], hang, word[room:]
+            row.append((word, style))
+            used += len(word)
+    rows.append(row)
+    return rows
+
+
+def cut(runs, width):
+    """Rows of at most width columns, cut at any character, as code is."""
+    rows, row, used = [], [], 0
+    for text, style in runs:
+        while text:
+            if used == width:
+                rows.append(row)
+                row, used = [], 0
+            piece = text[:width - used]
+            row.append((piece, style))
+            used += len(piece)
+            text = text[len(piece):]
+    rows.append(row)
+    return rows
+
+
+def highlight(code, lang):
+    """The lines of a block of code as runs of styled text.
+
+    Pygments colours them when it is installed and knows the language, and
+    otherwise the code keeps one colour.
+    """
+    plain = [[(line, 'code')] for line in code.split('\n')]
+    if not pygments or not lang:
+        return plain
+    try:
+        lexer = pygments.lexers.get_lexer_by_name(lang, stripnl=False,
+                                                  ensurenl=False)
+    except pygments.util.ClassNotFound:
+        return plain
+    kinds = [(pygments.token.string_to_tokentype(name), style)
+             for name, style in TOKENS]
+    lines = [[]]
+    for kind, value in lexer.get_tokens(code):
+        style = next((style for token, style in kinds if kind in token), 'code')
+        for n, piece in enumerate(value.split('\n')):
+            if n:
+                lines.append([])
+            if piece:
+                lines[-1].append((piece, style))
+    return lines
+
+
+def prose(line, kind, width):
+    """The rows of one line of markdown outside the code."""
+    if not line.strip():
+        return [[]]
+    if kind == 'heading':
+        return wrap([(HEADING.sub('', line).strip(), 'heading')], width)
+    if kind == 'table':
+        return cut(spans(line), width)[:1]
+    item = ITEM.match(line)
+    hang = len(item.group(1)) if item else len(line) - len(line.lstrip())
+    return wrap(spans(line, 'quote' if kind == 'quote' else 'text'), width, hang)
+
+
+def panel(block, number, width):
+    """The rows of a block of code: its number and language on a header row,
+    then its lines on a dark ground, at the indent of the list item."""
+    pad = [(' ' * block['indent'], 'text')]
+    inner = max(10, width - block['indent'])
+    label, lang = f' {number}', f"{block['lang']} "
+    rows = [pad + [(label, 'head-number'),
+                   (' ' * max(1, inner - len(label) - len(lang)), 'head'),
+                   (lang, 'head')]]
+    for line in highlight(block['text'].expandtabs(4), block['lang']):
+        for piece in cut(line, inner - 2):
+            used = sum(len(text) for text, _ in piece)
+            rows.append(pad + [(' ', 'code')] + piece
+                        + [(' ' * (inner - 1 - used), 'code')])
+    return rows
+
+
+def layout(page, width):
+    """The rows of an answer at that width, each tagged with its block."""
+    width, rows, number = max(20, width), [], 0
+    for index, block in enumerate(page['blocks']):
+        if index:
+            rows.append({'block': None, 'runs': [], 'code': False})
+        if block['kind'] == 'code':
+            number += 1
+            drawn = panel(block, number, width)
+        else:
+            drawn = [row for line in block['source'].split('\n')
+                     for row in prose(line, block['kind'], width)]
+        rows.extend({'block': index, 'runs': runs, 'code': block['kind'] == 'code'}
+                    for runs in drawn)
+    return rows
+
+
+def asked(prompt, width, most):
+    """The rows of the prompt that the answer follows, on a ground of its own,
+    at most `most` of them."""
+    rows = []
+    for n, line in enumerate(prompt.split('\n')):
+        rows.extend(wrap([(('❯ ' if n == 0 else '  ') + line, 'prompt')], width, 2))
+    if len(rows) > most:
+        rows = rows[:most - 1] + [[(f'  … {len(rows) - most + 1} more lines',
+                                    'prompt-more')]]
+    return [row + [(' ' * (width - sum(len(text) for text, _ in row)), 'prompt')]
+            for row in rows]
+
+
+def shade(mine, chosen):
+    """The suffix of the styles of a block: at the cursor, marked, or both."""
+    return '-both' if mine and chosen else '-cursor' if mine \
+        else '-mark' if chosen else ''
+
+
+def tint(style, mine, chosen):
+    """The style of a run in its block. The prose has no colour of a mark, and
+    a marked paragraph at the cursor is lit as any paragraph at the cursor."""
+    for suffix in (shade(mine, chosen), '-cursor' if mine else ''):
+        if suffix and style + suffix in STYLES:
+            return style + suffix
+    return style
+
+
+def view(rows, state, height):
+    """The first row on screen: the one scrolled to, or one that shows the
+    block at the cursor, from its top when it is taller than the screen."""
+    last = max(0, len(rows) - height)
+    top = state['top']
+    if state['follow']:
+        mine = [i for i, row in enumerate(rows) if row['block'] == state['cursor']]
+        if mine and mine[0] < top:
+            top = mine[0]
+        elif mine and mine[-1] >= top + height:
+            top = mine[0] if len(mine) >= height else mine[-1] - height + 1
+    return max(0, min(last, top))
+
+
+def palette():
+    """The curses attribute of each style, in the colours the terminal has."""
+    if not curses.has_colors():
+        return {name: attr for name, (_, _, attr) in STYLES.items()}
+    curses.start_color()
+    try:
+        curses.use_default_colors()
+    except curses.error:
+        pass
+    pairs, look = {}, {}
+    for name, (fg, bg, attr) in STYLES.items():
+        if curses.COLORS < 256:
+            fg, bg = BASIC.get(fg, -1), BASIC.get(bg, -1)
+        if (fg, bg) not in pairs:
+            pairs[(fg, bg)] = len(pairs) + 1
+            curses.init_pair(pairs[(fg, bg)], fg, bg)
+        look[name] = curses.color_pair(pairs[(fg, bg)]) | attr
+    return look
+
+
+def put(screen, row, column, text, attr=0):
+    """Text cut at the right edge, which curses refuses to write past."""
+    height, width = screen.getmaxyx()
+    room = width - column - (1 if row == height - 1 else 0)
+    if room > 0:
+        try:
+            screen.addnstr(row, column, text, room, attr)
+        except curses.error:
+            pass
+
+
+def draw(screen, state, book, prompt, rows, look):
+    """The answer under its prompt, or the help when it is asked for."""
+    screen.erase()
+    height, width = screen.getmaxyx()
+    put(screen, 0, 0, f" answer {state['page'] + 1}/{len(book)}", look['title'])
+    put(screen, 0, max(0, width - 8), '? help', look['help'])
+    if state['help']:
+        for y, (keys, what) in enumerate(HELP, 2):
+            put(screen, y, 3, keys, look['help-key'])
+            put(screen, y, 17, what, look['text'])
+        screen.refresh()
+        return
+    for y, runs in enumerate(prompt, 1):
+        column = 0
+        for text, style in runs:
+            put(screen, y, column, text, look[style])
+            column += len(text)
+    first = len(prompt) + 2
+    for y, row in enumerate(rows[state['top']:state['top'] + height - first - 1],
+                            first):
+        block = row['block']
+        mine = block is not None and block == state['cursor']
+        chosen = block is not None and block in state['marked']
+        suffix = shade(mine, chosen)
+        put(screen, y, 0, f"{state['top'] + y - first + 1:>4}", look['gutter' + suffix])
+        if suffix:
+            put(screen, y, 5, '┃', look['bar' + suffix])
+        column = GUTTER
+        for text, style in row['runs']:
+            put(screen, y, column, text, look[tint(style, mine, chosen)])
+            column += len(text)
+        if mine and not row['code']:
+            put(screen, y, column, ' ' * (width - column), look['text-cursor'])
+    found = book[state['page']]['blocks']
+    status = 'whole answer · ' if len(state['marked']) == len(found) > 1 else \
+        f"{len(state['marked'])} marked · " if state['marked'] else ''
+    if state['said']:
+        put(screen, height - 1, 1, state['said'], look['warn'])
+    else:
+        put(screen, height - 1, 1, status + FOOTER, look['help'])
+    screen.refresh()
+
+
+def pick(book):
+    """Run the picker: the key that ended it, the text to copy and what it is
+    called, or None if the user quits."""
+    def run(screen):
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        look, state, drawn = palette(), opened(book), {}
+        while True:
+            height, width = screen.getmaxyx()
+            page = book[state['page']]
+            shape = (state['page'], width, height)
+            if shape not in drawn:
+                drawn[shape] = (asked(page['prompt'], width, max(2, (height - 4) // 4)),
+                                layout(page, width - GUTTER - 1))
+            prompt, rows = drawn[shape]
+            body = max(1, height - len(prompt) - 3)
+            state = dict(state, top=view(rows, state, body))
+            draw(screen, state, book, prompt, rows, look)
+            key = screen.get_wch()
+            if isinstance(key, int):
+                key = curses.keyname(key).decode()
+            if key == '\x0c':
+                screen.clear()
+            state, done = step(dict(state, said=''), key, book, body)
+            if done in ('copy', 'claude', 'shell'):
+                try:
+                    return (done, *prepared(done, state, book[state['page']]))
+                except Refused as why:
+                    state = dict(state, said=str(why))
+            if done == 'quit':
+                return None
+    # Escape quits, and by default curses waits one second to tell a bare
+    # Escape from the start of an arrow key
+    os.environ.setdefault('ESCDELAY', '25')
+    return curses.wrapper(run)
+
+
+def place(agent, text):
+    """Put the text in the prompt box of the agent without sending it, or say
+    why not.
+
+    A blocked agent would take the text as the answer to its dialog, and a box
+    that holds a draft would take it as its tail. The status is read again,
+    since the agent may have moved on while the picker was open.
+    """
+    agent = next((pane for pane in api.panes()
+                  if pane['pane_id'] == agent['pane_id']), agent)
+    if agent.get('agent_status') == 'blocked':
+        return 'the agent is waiting on a dialog'
+    held = prompting.box(prompting.screen(agent))
+    if held is None:
+        return 'the prompt box is not on screen'
+    if held:
+        return 'the prompt box already holds a line'
+    text = CONTROLS.sub('', text)
+    api.call('pane', 'send_text', pane_id=agent['pane_id'], text=PASTE.format(text))
+    api.call('pane', 'focus', pane_id=agent['pane_id'])
+    return None
+
+
+def refuse(why):
+    """Say it as a toast too: the pane closes as soon as the script exits."""
+    print(why)
+    api.call('notification', 'show', title='copy', body=why, sound='none')
+    return 1
+
+
+def main():
+    panes = api.panes()
+    pane = prompting.target(panes, prompting.standing())
+    if not pane:
+        return refuse('no agent in this tab, or two and you stand in neither')
+    try:
+        book = pages(sessions.find(pane, panes))
+    except sessions.NoTranscript as why:
+        return refuse(str(why))
+    if not book:
+        return refuse('no answer of Claude in this tab yet')
+
+    # if no terminal reads the output, there is no picker, and the blocks of
+    # the last answer go to the pipe instead
+    if not sys.stdout.isatty():
+        for block in book[-1]['blocks']:
+            label = (block['lang'] or 'code') if block['kind'] == 'code' else block['kind']
+            print(f"{label:<10} {first_line(block['text'])}")
+        return 0
+
+    picked = pick(book)
+    if not picked:
+        return 0
+    done, text, what = picked
+    clip(text)
+    line = said(what, text)
+    if done == 'claude':
+        why = place(pane, text)
+        line += f', not put in the prompt box: {why}' if why \
+            else ', and put in the prompt box'
+    print(line)
+    api.call('notification', 'show', title='copy', body=line, sound='none')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

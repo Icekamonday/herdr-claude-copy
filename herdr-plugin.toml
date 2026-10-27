@@ -1,0 +1,25 @@
+id = "herdr-claude-copy"
+name = "Claude copy"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Copy the blocks of Claude's answers, or put a command in its prompt box"
+platforms = ["linux"]
+
+# a popup, so that the picker knows the pane the key was pressed in: a
+# temporary pane names only itself in HERDR_PANE_ID, and Herdr names the pane
+# under a popup in HERDR_PLUGIN_CONTEXT_JSON. In a tab with two agents, that
+# pane is the only way to tell which one is meant.
+[[panes]]
+id = "picker"
+title = "Copy"
+placement = "popup"
+width = "100%"
+height = "100%"
+command = ["./bin/copy"]
+
+[[actions]]
+id = "pick"
+title = "Copy from the answers of Claude"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-claude-copy",
+           "--entrypoint", "picker"]
