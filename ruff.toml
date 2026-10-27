@@ -1,0 +1,2 @@
+# The picker runs on the system Python, and Ubuntu 22.04 ships 3.10.
+target-version = "py310"
