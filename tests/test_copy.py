@@ -1,0 +1,766 @@
+#!/usr/bin/env python3
+"""Drive the copy picker against a stub of the Herdr socket.
+
+The picker reads transcripts and payloads, and asks Herdr through its socket.
+A stub server, a fixed world of panes and the transcripts that each test
+writes are enough to run it whole.
+"""
+
+import contextlib
+import importlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import unittest.mock
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), 'bin')
+
+ROOM = None
+STOP = None
+
+
+def setUpModule():
+    """Serve the fixed world on a socket, and point each path that the picker
+    reads at an empty room: a test that read the sessions of the machine would
+    pass or fail with the machine."""
+    global ROOM, STOP
+    sys.path.insert(0, os.path.join(HERE, 'stub'))
+    sys.path.insert(0, BIN)
+    import server
+    ROOM = tempfile.mkdtemp(prefix='herdr-copy-test-')
+    os.environ.update({
+        'HERDR_SOCKET_PATH': os.path.join(ROOM, 'herdr.sock'),
+        'XDG_CONFIG_HOME': os.path.join(ROOM, 'config'),
+        'CLAUDE_CONFIG_DIR': os.path.join(ROOM, 'claude'),
+        'CLAUDE_TMUX_STATE': os.path.join(ROOM, 'state'),
+    })
+    os.environ.pop('HERDR_PLUGIN_CONTEXT_JSON', None)
+    STOP = server.start(os.environ['HERDR_SOCKET_PATH'])
+
+
+def tearDownModule():
+    STOP.set()
+    shutil.rmtree(ROOM, ignore_errors=True)
+
+
+def run(**extra):
+    """bin/copy as Herdr runs it, from a shell of the first tab by default.
+
+    The interpreter of the suite runs it, so that each Python of the CI tests
+    itself, and a pipe stands for the terminal: the picker then prints the
+    blocks of the last answer instead of opening.
+    """
+    env = dict(os.environ, **dict({'HERDR_PANE_ID': 'w1:p2'}, **extra))
+    return subprocess.run([sys.executable, os.path.join(BIN, 'copy')],
+                          check=False, capture_output=True, text=True, timeout=30,
+                          env=env)
+
+
+@contextlib.contextmanager
+def stub_log():
+    """Collect what was asked of Herdr.
+
+    The socket stub answers inside this process, so the variable has to be
+    set here and not only in the environment of the script under test.
+    """
+    with tempfile.TemporaryDirectory() as room:
+        path = os.path.join(room, 'calls')
+        os.environ['HERDR_STUB_LOG'] = path
+        try:
+            yield path
+        finally:
+            del os.environ['HERDR_STUB_LOG']
+
+
+def user(content, **extra):
+    """A user record, as Claude Code writes it in a transcript."""
+    return dict({'type': 'user', 'message': {'role': 'user', 'content': content}},
+                **extra)
+
+
+def claude(message_id, block, **extra):
+    """One record of an answer: Claude Code writes one content block per record."""
+    return dict({'type': 'assistant', 'message': {
+        'id': message_id, 'role': 'assistant', 'content': [block]}}, **extra)
+
+
+def text(words):
+    return {'type': 'text', 'text': words}
+
+
+def write_transcript(path, records):
+    with open(path, 'w') as fp:
+        fp.writelines(json.dumps(record) + '\n' for record in records)
+
+
+ONE = '11111111-1111-4111-8111-111111111111'
+TWO = '22222222-2222-4222-8222-222222222222'
+
+
+def titled(name):
+    return {'type': 'custom-title', 'customTitle': name}
+
+
+# how a transcript records a compaction
+COMPACT = ('{"type": "system", "subtype": "compact_boundary", '
+           '"content": "Conversation compacted"}')
+
+
+class Picking(unittest.TestCase):
+    """What the copy picker reads in a transcript, shows, and copies."""
+
+    def setUp(self):
+        loader = importlib.machinery.SourceFileLoader(
+            'copy_picker', os.path.join(BIN, 'copy'))
+        spec = importlib.util.spec_from_loader('copy_picker', loader)
+        self.copy = importlib.util.module_from_spec(spec)
+        loader.exec_module(self.copy)
+
+    def book(self, *texts):
+        return [{'prompt': 'q', 'text': text, 'blocks': self.copy.blocks(text)}
+                for text in texts]
+
+    def press(self, book, *keys):
+        state, done = self.copy.opened(book), None
+        for key in keys:
+            state, done = self.copy.step(state, key, book)
+        return state, done
+
+    def test_an_answer_is_cut_into_its_blocks_in_order(self):
+        """A list keeps the blank lines between its items, and stays one block."""
+        answer = ('## Build\nRun this first:\n\n```sh\nmake -j8\n```\n\nThen:\n\n'
+                  '- one\n- two\n\n  more about two\n\n- three\n\n'
+                  '| a | b |\n|---|---|\n\n```\nplain\n```')
+        found = self.copy.blocks(answer)
+        self.assertEqual([(block['kind'], block['lang']) for block in found], [
+            ('heading', ''), ('paragraph', ''), ('code', 'sh'), ('paragraph', ''),
+            ('list', ''), ('table', ''), ('code', '')])
+        self.assertEqual(found[2]['text'], 'make -j8')
+        self.assertEqual(found[4]['text'], '- one\n- two\n\n  more about two\n\n- three')
+
+    def test_a_list_under_the_line_that_announces_it_is_a_block_of_its_own(self):
+        """Claude writes "two things:" and its list with no blank line between."""
+        found = self.copy.blocks('Two things:\n- one\n- two\n\nAnd 2026. was a year.\n\nEnd.')
+        self.assertEqual([block['kind'] for block in found],
+                         ['paragraph', 'list', 'paragraph', 'paragraph'])
+        self.assertEqual(found[1]['text'], '- one\n- two')
+
+    def test_a_block_in_a_list_item_loses_the_indent_of_the_item(self):
+        """The two columns belong to the item, and the indent of the code stays."""
+        answer = '- Run:\n  ```sh\n  for f in *; do\n    echo "$f"\n  done\n  ```\n- Done.'
+        found = self.copy.blocks(answer)
+        self.assertEqual([block['kind'] for block in found], ['list', 'code', 'list'])
+        self.assertEqual(found[1]['text'], 'for f in *; do\n  echo "$f"\ndone')
+        self.assertEqual(found[1]['indent'], 2)
+
+    def test_each_message_of_claude_is_an_answer_under_the_prompt_of_its_turn(self):
+        """A tool result and a record that Claude Code adds keep the turn open.
+        A local command opens a turn with no text, and a subagent answers no one."""
+        with tempfile.TemporaryDirectory() as room:
+            path = os.path.join(room, 'session.jsonl')
+            write_transcript(path, [
+                user('first question'),
+                claude('m1', text('Looking.')),
+                claude('m1', {'type': 'tool_use', 'id': 't1', 'name': 'Bash',
+                              'input': {}}),
+                user([{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]),
+                claude('m2', text('Found it.')),
+                user('<system-reminder>a reminder</system-reminder>', isMeta=True),
+                user('<command-name>/copy</command-name>'),
+                user('<local-command-stdout>Copied</local-command-stdout>'),
+                user('second question'),
+                claude('m3', text('Here:\n\n```sh\nls\n```')),
+                claude('m4', text('a subagent'), isSidechain=True),
+            ])
+            book = self.copy.pages(path)
+        self.assertEqual([(page['prompt'], page['text']) for page in book[:2]],
+                         [('first question', 'Looking.'),
+                          ('first question', 'Found it.')])
+        self.assertEqual(book[-1]['prompt'], 'second question')
+        state = self.copy.opened(book)
+        self.assertEqual(self.copy.selection(state, book[-1]), ('ls', 'the sh block'))
+
+    def test_an_answer_after_a_compaction_keeps_the_prompt_of_its_turn(self):
+        """Claude Code writes the summary as a user record of its own."""
+        with tempfile.TemporaryDirectory() as room:
+            path = os.path.join(room, 'session.jsonl')
+            write_transcript(path, [
+                user('fix the bug'),
+                claude('m1', text('Looking.')),
+                json.loads(COMPACT),
+                user('This session is being continued from a previous '
+                     'conversation that ran out of context.',
+                     isCompactSummary=True, isVisibleInTranscriptOnly=True),
+                claude('m2', text('Fixed.')),
+            ])
+            book = self.copy.pages(path)
+        self.assertEqual([(page['prompt'], page['text']) for page in book],
+                         [('fix the bug', 'Looking.'), ('fix the bug', 'Fixed.')])
+
+    def test_a_long_transcript_is_read_from_its_tail(self):
+        """A turn that the start of the tail cuts is left out with its prompt."""
+        kept = [claude('m1', text('Also cut.')), user('second question'),
+                claude('m2', text('Kept.'))]
+        with tempfile.TemporaryDirectory() as room:
+            path = os.path.join(room, 'session.jsonl')
+            write_transcript(path, [user('first question'),
+                                    claude('m1', text('x' * 400)), *kept])
+            self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
+            book = self.copy.pages(path)
+        self.assertEqual([(page['prompt'], page['text']) for page in book],
+                         [('second question', 'Kept.')])
+
+    def test_tab_goes_from_code_to_code_and_stops_at_the_last(self):
+        book = self.book('a\n\n```sh\none\n```\n\nb\n\n```sh\ntwo\n```\n\nc')
+        self.assertEqual(self.press(book)[0]['cursor'], 1)
+        self.assertEqual(self.press(book, '\t', '\t')[0]['cursor'], 3)
+        self.assertEqual(self.press(book, '\t', 'KEY_BTAB')[0]['cursor'], 1)
+        self.assertEqual(self.press(book, 'G', 'j')[0]['cursor'], 4)
+
+    def test_blocks_of_code_alone_are_copied_to_be_run(self):
+        book = self.book('a\n\n```sh\none\n```\n\nb\n\n```sh\ntwo\n```')
+        state, done = self.press(book, ' ', '\t', ' ', '\n')
+        self.assertEqual(done, 'copy')
+        self.assertEqual(self.copy.selection(state, book[0]), ('one\ntwo', '2 blocks'))
+
+    def test_prose_in_the_selection_keeps_the_markdown_of_every_block(self):
+        book = self.book('Run:\n\n```sh\none\n```\n\nDone.')
+        state, _ = self.press(book, ' ', 'k', ' ')
+        self.assertEqual(self.copy.selection(state, book[0]),
+                         ('Run:\n\n```sh\none\n```', '2 blocks'))
+
+    def test_a_marks_every_block_and_a_mark_can_then_be_taken_off(self):
+        book = self.book('Run:\n\n```sh\none\n```\n\nThen check.')
+        state, _ = self.press(book, 'a')
+        text, what = self.copy.selection(state, book[0])
+        self.assertEqual(text, book[0]['text'])
+        self.assertEqual(self.copy.said(what, text), 'copied the whole answer, 7 lines')
+        state, _ = self.press(book, 'a', ' ')
+        self.assertEqual(self.copy.selection(state, book[0]),
+                         ('Run:\n\nThen check.', '2 blocks'))
+        self.assertEqual(self.press(book, 'a', 'a')[0]['marked'], frozenset())
+
+    def test_shift_a_copies_the_whole_answer_at_once(self):
+        book = self.book('Run:\n\n```sh\none\n```')
+        state, done = self.press(book, 'A')
+        self.assertEqual(done, 'copy')
+        self.assertEqual(self.copy.selection(state, book[0]),
+                         (book[0]['text'], 'the whole answer'))
+
+    def test_another_answer_starts_with_no_mark_and_the_ends_hold(self):
+        book = self.book('one', 'two')
+        state, _ = self.press(book, ' ', 'p', 'p')
+        self.assertEqual((state['page'], state['marked']), (0, frozenset()))
+        state, done = self.press(book, 'n', 'q')
+        self.assertEqual((state['page'], done), (1, 'quit'))
+
+    def test_a_list_item_wraps_under_its_text_without_the_marks(self):
+        page = self.book('- a `command` and **a word** that make this item wrap twice')[0]
+        rows = [''.join(run for run, _ in row['runs'])
+                for row in self.copy.layout(page, 20)]
+        self.assertEqual(rows[0], '- a command and a')
+        self.assertTrue(all(row.startswith('  ') for row in rows[1:]), rows)
+        self.assertTrue(all(len(row) <= 20 for row in rows), rows)
+
+    def test_a_code_line_wider_than_the_pane_is_cut_and_kept_whole(self):
+        line = 'printf "%s\\n" one two three four five six seven'
+        page = self.book(f'```sh\n{line}\n```')[0]
+        rows = [''.join(run for run, _ in row['runs'])
+                for row in self.copy.layout(page, 24)]
+        self.assertEqual(''.join(row[1:-1] for row in rows[1:]).rstrip(), line)
+        self.assertTrue(all(len(row) == 24 for row in rows), rows)
+
+    def test_the_view_follows_the_cursor_and_shows_a_tall_block_from_its_top(self):
+        rows = [{'block': 0}] * 5 + [{'block': None}] + [{'block': 1}] * 10
+        state = {'cursor': 1, 'top': 0, 'follow': True}
+        self.assertEqual(self.copy.view(rows, state, 6), 6)
+        self.assertEqual(self.copy.view(rows, dict(state, cursor=0, top=6), 6), 0)
+        self.assertEqual(self.copy.view(rows, dict(state, top=99, follow=False), 6), 10)
+
+    def test_a_block_in_a_language_unknown_keeps_one_colour(self):
+        self.assertEqual(self.copy.highlight('x = 1', 'nosuchlanguage'),
+                         [[('x = 1', 'code')]])
+        self.assertEqual(self.copy.highlight('x = 1', ''), [[('x = 1', 'code')]])
+
+    @unittest.skipUnless(importlib.util.find_spec('pygments'), 'no Pygments')
+    def test_pygments_colours_a_shell_block(self):
+        styles = {style for line in self.copy.highlight('# done\necho "$HOME"', 'sh')
+                  for _, style in line}
+        self.assertTrue({'builtin', 'string', 'comment'} <= styles, styles)
+
+    def test_a_command_shows_as_it_was_typed(self):
+        prompt = self.copy._prompt(
+            '<command-message>review</command-message>\n'
+            '<command-name>/review</command-name>\n'
+            '<command-args>the last commit</command-args>')
+        self.assertEqual(prompt, '/review the last commit')
+        self.assertEqual(self.copy._prompt([text('look'), {'type': 'image'}]),
+                         'look\n[image]')
+
+    def test_a_shell_command_is_the_prompt_and_its_output_is_not(self):
+        """Claude answers a ! command once its output is recorded after it."""
+        with tempfile.TemporaryDirectory() as room:
+            path = os.path.join(room, 'session.jsonl')
+            write_transcript(path, [
+                user('<bash-input>cd /tmp\npwd</bash-input>'),
+                user('<bash-stdout>/tmp</bash-stdout><bash-stderr></bash-stderr>'),
+                claude('m1', text('It passes.')),
+            ])
+            book = self.copy.pages(path)
+        self.assertEqual([(page['prompt'], page['text']) for page in book],
+                         [('! cd /tmp\npwd', 'It passes.')])
+
+    def test_code_in_bold_loses_its_backticks(self):
+        self.assertEqual(self.copy.spans('**T1, the `!` mark** and more'),
+                         [('T1, the ', 'bold'), ('!', 'inline'), (' mark', 'bold'),
+                          (' and more', 'text')])
+
+    def test_a_long_prompt_is_cut_on_its_own_ground(self):
+        rows = [''.join(run for run, _ in row)
+                for row in self.copy.asked('one\ntwo\nthree\nfour', 20, 3)]
+        self.assertEqual([row.rstrip() for row in rows],
+                         ['❯ one', '  two', '  … 2 more lines'])
+        self.assertTrue(all(len(row) == 20 for row in rows), rows)
+
+    def test_a_key_that_closes_the_help_does_nothing_else(self):
+        book = self.book('one')
+        state, done = self.press(book, '?')
+        self.assertTrue(state['help'])
+        state, done = self.press(book, '?', 'q')
+        self.assertEqual((state['help'], done), (False, None))
+
+    def test_the_cursor_a_mark_and_both_have_colours_of_their_own(self):
+        self.assertEqual(self.copy.tint('head', True, False), 'head-cursor')
+        self.assertEqual(self.copy.tint('head', False, True), 'head-mark')
+        self.assertEqual(self.copy.tint('head', True, True), 'head-both')
+        self.assertEqual(self.copy.tint('text', True, True), 'text-cursor')
+        self.assertEqual(self.copy.tint('code', True, True), 'code')
+
+    def ran(self, done, answer, *keys):
+        book = self.book(answer)
+        state, _ = self.press(book, *keys)
+        return self.copy.prepared(done, state, book[0])[0]
+
+    def test_bang_and_dollar_are_the_keys_of_claude_and_of_a_shell(self):
+        book = self.book('```sh\nls\n```')
+        self.assertEqual(self.press(book, '!')[1], 'claude')
+        self.assertEqual(self.press(book, '$')[1], 'shell')
+
+    def test_a_block_with_its_bang_keeps_one_for_claude_and_none_for_a_shell(self):
+        answer = '```sh\n!echo T1\n```'
+        self.assertEqual(self.ran('claude', answer), '!echo T1')
+        self.assertEqual(self.ran('shell', answer), 'echo T1')
+        self.assertEqual(self.ran('copy', answer), '!echo T1')
+
+    def test_blocks_for_claude_take_one_bang_in_front_and_no_other(self):
+        """Whichever block carries a bang, with or without a language."""
+        for first, second in (('echo a', 'echo b'), ('!echo a', '!echo b'),
+                              ('echo a', '!echo b'), ('!echo a', 'echo b')):
+            answer = f'```sh\n{first}\n```\n\n```\n{second}\n```'
+            self.assertEqual(self.ran('claude', answer, ' ', '\t', ' '),
+                             '!echo a\necho b', answer)
+            self.assertEqual(self.ran('shell', answer, ' ', '\t', ' '),
+                             'echo a\necho b', answer)
+
+    def test_each_line_of_a_block_loses_its_bang(self):
+        answer = '```sh\n!echo 1\n!echo 2\n```'
+        self.assertEqual(self.ran('claude', answer), '!echo 1\necho 2')
+        self.assertEqual(self.ran('shell', answer), 'echo 1\necho 2')
+
+    def test_a_bang_and_its_space_are_the_mark_of_claude(self):
+        """Claude writes "! git status" far more often than "!git status"."""
+        answer = '```sh\n! git status\n```\n\n```sh\n!  ls\n```'
+        self.assertEqual(self.ran('claude', answer, ' ', '\t', ' '), '!git status\nls')
+        self.assertEqual(self.ran('shell', answer, ' ', '\t', ' '), 'git status\nls')
+
+    def test_a_bang_inside_a_line_stays(self):
+        answer = '```sh\n[ 1 != 2 ] && echo d\n```'
+        self.assertEqual(self.ran('claude', answer), '![ 1 != 2 ] && echo d')
+        self.assertEqual(self.ran('shell', answer), '[ 1 != 2 ] && echo d')
+
+    def test_a_block_in_a_list_item_runs_without_its_indent(self):
+        answer = '1. Run:\n   ```sh\n   !echo T9\n   ```'
+        self.assertEqual(self.ran('claude', answer), '!echo T9')
+
+    def test_claude_refuses_code_that_is_not_shell(self):
+        answer = '```python\nprint("T10")\n```'
+        with self.assertRaises(self.copy.Refused):
+            self.ran('claude', answer)
+        self.assertEqual(self.ran('shell', answer), 'print("T10")')
+
+    def test_claude_leaves_out_a_block_that_is_not_shell_and_says_so(self):
+        answer = '```sh\nls\n```\n\n```python\nprint(1)\n```\n\n```bash\npwd\n```'
+        book = self.book(answer)
+        state, _ = self.press(book, 'a')
+        self.assertEqual(self.copy.prepared('claude', state, book[0]),
+                         ('!ls\npwd', '2 blocks for Claude, 1 python block left out'))
+        self.assertEqual(self.copy.prepared('shell', state, book[0])[0],
+                         'ls\nprint(1)\npwd')
+
+    def test_the_prose_stays_out_and_prose_alone_copies_nothing_to_run(self):
+        answer = 'Run:\n\n```sh\nls\n```\n\nThen:\n\n```sh\npwd\n```'
+        self.assertEqual(self.ran('claude', answer, 'a'), '!ls\npwd')
+        with self.assertRaises(self.copy.Refused):
+            self.ran('shell', answer, 'k')
+
+    def test_a_command_for_claude_goes_in_its_empty_box_without_an_enter(self):
+        """The paste markers keep a newline from sending the first command."""
+        agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
+        with stub_log() as log:
+            self.assertIsNone(self.copy.place(agent, '!echo a\necho b'))
+            asked = pathlib.Path(log).read_text()
+        self.assertIn('pane.send_text w2:p1 \033[200~!echo a\necho b\033[201~', asked)
+        self.assertIn('pane.focus w2:p1', asked)
+        self.assertNotIn('agent.prompt', asked)
+
+    def test_a_command_for_claude_loses_its_control_characters(self):
+        """An end marker in the text would close the paste before its last line."""
+        agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
+        with stub_log() as log:
+            self.copy.place(agent, '!cat log\n\033[201~\necho sent\r\n\tdone\x07\x9b')
+            asked = pathlib.Path(log).read_text()
+        self.assertIn('pane.send_text w2:p1 '
+                      '\033[200~!cat log\n[201~\necho sent\n\tdone\033[201~', asked)
+
+    def test_a_box_out_of_sight_takes_no_command(self):
+        """The working agent of the fixture shows no screen, so no box."""
+        with stub_log() as log:
+            why = self.copy.place({'pane_id': 'w1:p1'}, '!ls')
+            asked = pathlib.Path(log).read_text()
+        self.assertEqual(why, 'the prompt box is not on screen')
+        self.assertNotIn('send_text', asked)
+
+    def test_the_copy_goes_to_the_terminal_as_an_osc_52_sequence(self):
+        """Herdr catches the sequence and writes the clipboard."""
+        terminal = io.StringIO()
+        self.copy.clip('make -j8\n  ls', terminal)
+        self.assertEqual(terminal.getvalue(),
+                         '\033]52;c;bWFrZSAtajgKICBscw==\a')
+
+
+class PromptBox(unittest.TestCase):
+    """What the screen of an agent says about the box one types in, and which
+    agent a key typed for."""
+
+    def setUp(self):
+        import prompting
+        self.prompting = importlib.reload(prompting)
+
+    def screen(self, box):
+        """A screen with a message already sent above the box, as Claude draws
+        it: both carry the same mark, and only the lowest is the box."""
+        rule = '\u2500' * 40
+        return f'\u276f a message of yours\n\n{rule}\n{box}\n{rule}\n'
+
+    def test_a_box_out_of_sight_is_told_from_an_empty_one(self):
+        """A command is pasted only into a box seen, and an empty one."""
+        self.assertIsNone(self.prompting.box('\u25cf a call\n  \u23bf its answer\n'))
+        self.assertEqual(self.prompting.box(self.screen('\u276f')), '')
+        self.assertEqual(self.prompting.box(self.screen('\u276f half a question')),
+                         'half a question')
+
+    def test_a_popup_stands_in_the_pane_under_it(self):
+        context = {'HERDR_PANE_ID': 'w1:p9',
+                   'HERDR_PLUGIN_CONTEXT_JSON': '{"focused_pane_id": "w2:p1"}'}
+        with unittest.mock.patch.dict(os.environ, context):
+            self.assertEqual(self.prompting.standing(), 'w2:p1')
+        with unittest.mock.patch.dict(os.environ, dict(context,
+                                      HERDR_PLUGIN_CONTEXT_JSON='not json')):
+            self.assertEqual(self.prompting.standing(), 'w1:p9')
+
+    TAB = ({'pane_id': 'p1', 'tab_id': 't', 'agent': 'claude'},
+           {'pane_id': 'p2', 'tab_id': 't', 'agent': 'claude'},
+           {'pane_id': 'p3', 'tab_id': 't'})
+
+    def test_a_tab_with_two_agents_names_the_one_you_stand_in(self):
+        self.assertEqual(self.prompting.target(self.TAB, 'p2')['pane_id'], 'p2')
+
+    def test_a_tab_with_two_agents_names_none_from_a_shell(self):
+        """Either could be meant, and a line typed in the other is lost."""
+        self.assertIsNone(self.prompting.target(self.TAB, 'p3'))
+
+
+class Resolution(unittest.TestCase):
+    """Which payload a pane takes, when the identity Herdr holds has drifted."""
+
+    def setUp(self):
+        self.room = tempfile.mkdtemp(prefix='herdr-resolve-')
+        self.addCleanup(shutil.rmtree, self.room)
+        import sessions
+        self.store = importlib.reload(sessions)
+        self.published = []
+
+    def publish(self, sid, name, *records, age=60, written=None):
+        """A payload of that age, and the transcript that it names.
+
+        Freshness is what the rule turns on. The transcript stays older than
+        its payload, unless written gives its own age.
+        """
+        transcript = os.path.join(self.room, f'{sid}.jsonl')
+        write_transcript(transcript, [*records, {'type': 'user'}])
+        now = time.time()
+        when = now - (age + 10 if written is None else written)
+        os.utime(transcript, (when, when))
+        self.published.append((now - age, {'session_id': sid, 'session_name': name,
+                                           'transcript_path': transcript}))
+        self.published.sort(key=lambda pair: pair[0], reverse=True)
+
+    def resolve(self, *panes):
+        return self.store.resolve_all(list(panes), self.published)
+
+    def test_the_payload_is_read_where_the_hook_writes_it(self):
+        """A hook that honours XDG_STATE_HOME writes its payloads there."""
+        self.addCleanup(importlib.reload, self.store)
+        with unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': '/xdg/state'}):
+            os.environ.pop('CLAUDE_TMUX_STATE', None)
+            self.assertEqual(importlib.reload(self.store).STATE,
+                             '/xdg/state/claude-tmux')
+
+    def test_two_panes_in_one_directory_take_two_sessions(self):
+        self.publish('one', 'A named session')
+        self.publish('two', 'Its neighbour in the same folder', age=120)
+        got = self.resolve(
+            {'pane_id': 'a', 'cwd': '/w', 'terminal_title_stripped': 'A named session'},
+            {'pane_id': 'b', 'cwd': '/w',
+             'terminal_title_stripped': 'Its neighbour in the same folder'})
+        self.assertEqual(got['a']['session_id'], 'one')
+        self.assertEqual(got['b']['session_id'], 'two')
+
+    def test_a_resumed_session_takes_the_newest_of_its_name(self):
+        """Herdr keeps the identity from before the resume; the title does not."""
+        self.publish('before', 'A named session', age=3600)
+        self.publish('after', 'A named session')
+        got = self.resolve({'pane_id': 'a', 'terminal_title_stripped': 'A named session',
+                            'agent_session': {'value': 'before'}})
+        self.assertEqual(got['a']['session_id'], 'after')
+
+    def test_a_renamed_session_is_found_by_its_new_name(self):
+        """The payload keeps the old name until Claude redraws its status line,
+        and another session may still carry that old name."""
+        self.publish('renamed', 'deploy', titled('deploy the fix'), written=0)
+        self.publish('other', 'deploy', titled('deploy'), age=120, written=130)
+        got = self.resolve(
+            {'pane_id': 'work', 'terminal_title_stripped': 'deploy'},
+            {'pane_id': 'home', 'terminal_title_stripped': 'deploy the fix',
+             'agent_session': {'value': 'stale'}})
+        self.assertEqual(got['home']['session_id'], 'renamed')
+        self.assertEqual(got['work']['session_id'], 'other')
+
+    def test_without_a_title_the_identity_decides(self):
+        self.publish('one', 'A named session')
+        got = self.resolve({'pane_id': 'a', 'terminal_title_stripped': 'claude',
+                            'agent_session': {'value': 'one'}})
+        self.assertEqual(got['a']['session_id'], 'one')
+
+    def test_a_session_nobody_named_answers_to_the_name_claude_code_gave(self):
+        """A name that the user gave wins over the one that Claude Code gave."""
+        self.publish('unnamed', '', {'type': 'ai-title', 'aiTitle': 'Fix the build'},
+                     written=0)
+        self.publish('named', 'release notes', titled('release notes'),
+                     {'type': 'ai-title', 'aiTitle': 'Write the notes'}, written=0)
+        got = self.resolve(
+            {'pane_id': 'a', 'terminal_title_stripped': 'Fix the build'},
+            {'pane_id': 'b', 'terminal_title_stripped': 'Write the notes'})
+        self.assertEqual(got['a']['session_id'], 'unnamed')
+        self.assertNotIn('b', got)
+
+
+class Finding(unittest.TestCase):
+    """Which transcript the copy picker reads, when it may not guess."""
+
+    def setUp(self):
+        self.room = tempfile.mkdtemp(prefix='herdr-find-')
+        self.addCleanup(shutil.rmtree, self.room)
+        self.root = os.path.join(self.room, 'claude', 'projects')
+        self.state = os.path.join(self.room, 'state')
+        os.makedirs(self.state)
+        import sessions
+        self.addCleanup(importlib.reload, sessions)
+        patch = unittest.mock.patch.dict(os.environ, {
+            'CLAUDE_CONFIG_DIR': os.path.join(self.room, 'claude'),
+            'CLAUDE_TMUX_STATE': self.state,
+            'XDG_CONFIG_HOME': os.path.join(self.room, 'config')})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.store = importlib.reload(sessions)
+
+    def transcript(self, sid, *names, root=None, folder='-w-app', age=0):
+        path = os.path.join(root or self.root, folder, f'{sid}.jsonl')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_transcript(path, [*names, user('q'), claude('m1', text(f'from {sid}'))])
+        when = time.time() - age
+        os.utime(path, (when, when))
+        return os.path.realpath(path)
+
+    def payload(self, sid, name, transcript_path):
+        with open(os.path.join(self.state, f'{sid}.raw.json'), 'w') as fp:
+            json.dump({'session_id': sid, 'session_name': name, 'cwd': '/w/app',
+                       'transcript_path': transcript_path}, fp)
+
+    def find(self, title, sid=None, cwd='/w/app'):
+        pane = {'pane_id': 'p', 'cwd': cwd, 'terminal_title_stripped': title,
+                'agent_session': {'value': sid} if sid else None}
+        return self.store.find(pane, [pane])
+
+    def test_with_no_payload_the_identity_finds_the_transcript(self):
+        """/cd moves a session to the project of its new cwd."""
+        found = self.transcript(ONE, titled('build'), folder='-w-lib')
+        self.assertEqual(self.find('claude', ONE), found)
+
+    def test_with_no_payload_the_title_finds_the_transcript(self):
+        """devcontainer exec starts Claude at the top of the workspace."""
+        self.transcript(ONE, titled('build'))
+        found = self.transcript(TWO, titled('release'), age=60)
+        self.assertEqual(self.find('release', cwd='/w/app/src'), found)
+
+    def test_a_stale_identity_gives_way_to_the_title(self):
+        self.transcript(ONE, titled('old work'))
+        found = self.transcript(TWO, titled('new work'), age=60)
+        self.assertEqual(self.find('new work', ONE), found)
+
+    def test_a_session_never_renamed_is_found_by_its_ai_title(self):
+        found = self.transcript(ONE, {'type': 'ai-title', 'aiTitle': 'Fix the build'}, age=60)
+        self.transcript(TWO, titled('other'), {'type': 'ai-title', 'aiTitle': 'Fix the build'})
+        self.assertEqual(self.find('Fix the build'), found)
+
+    def test_a_transient_title_with_no_identity_is_refused(self):
+        self.transcript(ONE, titled('build'))
+        with self.assertRaisesRegex(self.store.NoTranscript, '^name this session with /rename'):
+            self.find('claude')
+
+    def test_a_forged_transcript_path_is_not_followed(self):
+        """The finder keeps the project and the file, and joins them to its root."""
+        forged = self.transcript(ONE, titled('build'), root=os.path.join(self.room, 'forged'))
+        self.payload(ONE, 'build', forged)
+        found = self.transcript(ONE, titled('build'), age=3 * 86400)
+        self.assertEqual(self.find('build'), found)
+
+    def test_a_link_out_of_the_root_is_refused(self):
+        secret = os.path.join(self.room, 'secret')
+        write_transcript(secret, [titled('build'), user('q'), claude('m1', text('secret'))])
+        link = os.path.join(self.root, '-w-app', f'{ONE}.jsonl')
+        os.makedirs(os.path.dirname(link))
+        os.symlink(secret, link)
+        self.payload(ONE, 'build', link)
+        with self.assertRaisesRegex(self.store.NoTranscript,
+                                    f'^check {re.escape(link)}: it resolves outside'):
+            self.find('build')
+
+    def test_a_stem_that_is_not_the_session_id_is_refused(self):
+        self.transcript('build-1', titled('build'))
+        self.payload('build-1', 'build', os.path.join(self.root, '-w-app', 'build-1.jsonl'))
+        self.transcript(TWO, titled('other'))
+        self.payload(ONE, 'deploy', os.path.join(self.root, '-w-app', f'{TWO}.jsonl'))
+        for title in ('build', 'deploy'):
+            with self.subTest(title), \
+                    self.assertRaisesRegex(self.store.NoTranscript, '^add the projects directory'):
+                self.find(title)
+
+    def test_an_old_transcript_of_the_project_is_not_taken(self):
+        """A host session that once ran in the workspace of a container pane."""
+        self.transcript(ONE, titled('build'), age=2 * 86400)
+        self.transcript(TWO, titled('other'))
+        with self.assertRaisesRegex(self.store.NoTranscript, 'no transcript carries its name'):
+            self.find('build')
+
+    def test_of_two_roots_the_newest_write_wins(self):
+        container = os.path.join(self.room, 'dc', 'projects')
+        os.makedirs(os.path.join(self.room, 'config', 'herdr-claude-copy'))
+        with open(self.store.sources_file(), 'w') as fp:
+            fp.write(f'{container}\n')
+        self.transcript(ONE, titled('build'), age=300)
+        found = self.transcript(TWO, titled('build'), root=container, age=10)
+        self.assertEqual(self.find('build'), found)
+
+    def test_the_sources_file_adds_to_the_host_paths(self):
+        host = (self.root, self.state)
+        self.assertEqual(self.store.sources(), [host])
+        os.makedirs(os.path.join(self.room, 'config', 'herdr-claude-copy'))
+        with open(self.store.sources_file(), 'w') as fp:
+            fp.write('# a devcontainer\n\n'
+                     '~/dc/projects   ~/dc/drop  # the bind and the drop\n/x/projects\n')
+        self.assertEqual(self.store.sources(), [
+            host, (os.path.expanduser('~/dc/projects'), os.path.expanduser('~/dc/drop')),
+            ('/x/projects', None)])
+
+
+class Runs(unittest.TestCase):
+    """bin/copy run whole, from a pane of the stub world."""
+
+    def assert_clean(self, out):
+        self.assertEqual(out.returncode, 0, f'copy failed: {out.stderr}')
+        self.assertNotIn('Traceback', out.stderr, 'copy raised an exception')
+
+    def converse(self, room, *records, title='the build'):
+        """The transcript of the agent of w2, under the projects root of the
+        room, and the title of its pane."""
+        server = sys.modules['server']
+        server.TITLES['w2:p1'] = title
+        self.addCleanup(server.TITLES.pop, 'w2:p1', None)
+        path = os.path.join(room, 'projects', '-home-user-dev-app', f'{ONE}.jsonl')
+        os.makedirs(os.path.dirname(path))
+        write_transcript(path, [titled(title), *records])
+        return path
+
+    def test_the_copy_reads_the_agent_of_the_tab_you_stand_in(self):
+        """The key fires from where you stand, and nothing is typed into Claude.
+        No hook wrote a payload, so the title finds the transcript."""
+        with tempfile.TemporaryDirectory() as room:
+            self.converse(room, user('how do I build it?'),
+                          claude('m1', text('Run this:\n\n```sh\nmake -j8\n```')))
+            with stub_log() as log:
+                out = run(HERDR_PANE_ID='w2:p2', CLAUDE_CONFIG_DIR=room)
+                asked = pathlib.Path(log).read_text()
+        self.assert_clean(out)
+        self.assertEqual([row.split()[0] for row in out.stdout.splitlines()],
+                         ['paragraph', 'sh'])
+        self.assertIn('make -j8', out.stdout)
+        self.assertNotIn('send_text', asked)
+
+    def test_the_popup_copies_from_the_pane_under_it(self):
+        """A popup has no pane of its own, and the context names the one under it."""
+        with tempfile.TemporaryDirectory() as room:
+            path = self.converse(room, user('which?'), claude('m1', text('This one.')))
+            with open(os.path.join(room, f'{ONE}.raw.json'), 'w') as fp:
+                json.dump({'session_id': ONE, 'session_name': 'the build',
+                           'cwd': '/home/user/dev/app', 'transcript_path': path}, fp)
+            out = run(HERDR_PANE_ID='w1:p2', CLAUDE_CONFIG_DIR=room,
+                      CLAUDE_TMUX_STATE=room,
+                      HERDR_PLUGIN_CONTEXT_JSON='{"focused_pane_id": "w2:p2"}')
+        self.assert_clean(out)
+        self.assertIn('This one.', out.stdout)
+
+    def test_a_session_with_no_answer_says_so_in_a_toast(self):
+        """The pane closes when the script exits, and takes a printed line with it."""
+        with tempfile.TemporaryDirectory() as room:
+            self.converse(room, user('anyone?'))
+            with stub_log() as log:
+                out = run(HERDR_PANE_ID='w2:p2', CLAUDE_CONFIG_DIR=room)
+                asked = pathlib.Path(log).read_text()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('no answer of Claude', out.stdout)
+        self.assertIn('notification.show copy no answer of Claude', asked)
+
+    def test_a_session_with_no_transcript_names_the_sources_file(self):
+        with stub_log() as log:
+            out = run()
+            asked = pathlib.Path(log).read_text()
+        self.assertEqual(out.returncode, 1)
+        sources = os.path.join(os.environ['XDG_CONFIG_HOME'], 'herdr-claude-copy', 'sources')
+        self.assertIn(f'add the projects directory of this session to {sources}', out.stdout)
+        self.assertIn('notification.show copy add the projects directory', asked)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

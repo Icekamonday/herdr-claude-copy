@@ -1,0 +1,59 @@
+{
+  "panes": [
+    {
+      "pane_id": "w1:p1",
+      "tab_id": "w1:t1",
+      "workspace_id": "w1",
+      "cwd": "/home/user/dev/notes",
+      "focused": true,
+      "agent": "claude",
+      "agent_status": "working",
+      "terminal_title": "\u25d0 A named session",
+      "terminal_title_stripped": "A named session",
+      "agent_session": {
+        "kind": "id",
+        "value": "aaaa1111"
+      }
+    },
+    {
+      "pane_id": "w1:p2",
+      "tab_id": "w1:t1",
+      "workspace_id": "w1",
+      "cwd": "/home/user/dev/notes",
+      "focused": false,
+      "agent": null,
+      "agent_status": "unknown",
+      "terminal_title": "bash",
+      "terminal_title_stripped": "bash"
+    },
+    {
+      "pane_id": "w2:p1",
+      "tab_id": "w2:t1",
+      "workspace_id": "w2",
+      "cwd": "/home/user/dev/app",
+      "focused": false,
+      "agent": "claude",
+      "agent_status": "idle",
+      "terminal_title": "\u2733 claude",
+      "terminal_title_stripped": "claude",
+      "agent_session": {
+        "kind": "id",
+        "value": "bbbb2222"
+      }
+    },
+    {
+      "pane_id": "w2:p2",
+      "tab_id": "w2:t1",
+      "workspace_id": "w2",
+      "cwd": "/home/user/dev/app",
+      "focused": false,
+      "agent": null,
+      "agent_status": "unknown",
+      "terminal_title": "bash",
+      "terminal_title_stripped": "bash"
+    }
+  ],
+  "screens": {
+    "w2:p1": "\u25cf Done\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\u276f\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u23f5\u23f5 auto mode on\n"
+  }
+}
