@@ -43,7 +43,7 @@ Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last an
 | `p` `n` | previous or next answer |
 | `?`, `q` | every key, quit |
 
-The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard write. The picker finds the session by the title of its pane, which Claude Code sets to the session name, then by the session id that Herdr holds. If neither works, name the session with `/rename`.
+The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard write. The picker finds the session by the title of its pane, which Claude Code sets to the session name, then by the session id that Herdr holds. If the title names no session, the session id decides alone: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, for example, the pane keeps the title that the shell set. If neither works, name the session with `/rename`.
 
 ## Run the blocks in a shell of the tab
 
