@@ -29,6 +29,9 @@ READS = {
     'pane.read': lambda p: {'read': {'pane_id': p.get('pane_id'),
                                      'text': WORLD['screens'].get(p.get('pane_id'), '')},
                             'type': 'pane_read'},
+    'pane.process_info': lambda p: {
+        'process_info': dict(WORLD['processes'].get(p.get('pane_id'), {}),
+                             pane_id=p.get('pane_id'))},
 }
 
 

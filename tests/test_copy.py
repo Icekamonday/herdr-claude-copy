@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -44,8 +45,10 @@ def setUpModule():
         'XDG_CONFIG_HOME': os.path.join(ROOM, 'config'),
         'CLAUDE_CONFIG_DIR': os.path.join(ROOM, 'claude'),
         'CLAUDE_TMUX_STATE': os.path.join(ROOM, 'state'),
+        'XDG_STATE_HOME': os.path.join(ROOM, 'xdg-state'),
     })
     os.environ.pop('HERDR_PLUGIN_CONTEXT_JSON', None)
+    os.environ.pop('HERDR_PANE_ID', None)
     STOP = server.start(os.environ['HERDR_SOCKET_PATH'])
 
 
@@ -408,6 +411,20 @@ class Picking(unittest.TestCase):
         self.assertEqual(self.copy.prepared('shell', state, book[0])[0],
                          'ls\nprint(1)\npwd')
 
+    def test_star_runs_each_shell_block_as_a_step_of_its_own(self):
+        answer = ('```sh\n!echo a\necho b\n```\n\n```python\nprint(1)\n```\n\n'
+                  '```bash\npwd\n```')
+        book = self.book(answer)
+        state, done = self.press(book, 'a', '*')
+        self.assertEqual(done, 'run')
+        self.assertEqual(self.copy.prepared('run', state, book[0]),
+                         (['echo a\necho b', 'pwd'],
+                          '2 blocks in the free shell, 1 python block left out'))
+
+    def test_a_run_refuses_code_that_is_not_shell(self):
+        with self.assertRaisesRegex(self.copy.Refused, '^a shell runs shell code, not python'):
+            self.ran('run', '```python\nprint(1)\n```')
+
     def test_the_prose_stays_out_and_prose_alone_copies_nothing_to_run(self):
         answer = 'Run:\n\n```sh\nls\n```\n\nThen:\n\n```sh\npwd\n```'
         self.assertEqual(self.ran('claude', answer, 'a'), '!ls\npwd')
@@ -440,6 +457,31 @@ class Picking(unittest.TestCase):
             asked = pathlib.Path(log).read_text()
         self.assertEqual(why, 'the prompt box is not on screen')
         self.assertNotIn('send_text', asked)
+
+    def test_a_run_goes_to_the_free_shell_of_the_tab_without_an_enter(self):
+        """The shell shows the blocks that the Enter of the user will run, and
+        an end marker in a block cannot close the paste early."""
+        agent = {'pane_id': 'w2:p1', 'tab_id': 'w2:t1'}
+        with stub_log() as log, contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.copy.launch(agent, ['make\033[201~'], 'the sh block'), 0)
+            asked = pathlib.Path(log).read_text()
+        run = said.getvalue().strip().rpartition(' start the run in ')[2]
+        self.assertTrue(os.path.isfile(os.path.join(run, 'run')), said.getvalue())
+        self.assertIn(f"pane.send_text w2:p2 \033[200~sh {shlex.quote(run + '/run')} "
+                      "<<'END_OF_STEPS'\n# ---- step 1\nmake[201~\nEND_OF_STEPS\033[201~",
+                      asked)
+        self.assertNotIn('send_input', asked)
+        self.assertIn('pane.focus w2:p2', asked)
+
+    def test_a_run_waits_for_a_shell_at_its_prompt(self):
+        """The shell of the first tab is running make."""
+        agent = {'pane_id': 'w1:p1', 'tab_id': 'w1:t1'}
+        with stub_log() as log, contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.copy.launch(agent, ['ls'], 'the sh block'), 1)
+            asked = pathlib.Path(log).read_text()
+        self.assertEqual(said.getvalue(),
+                         'open a shell in this tab, or wait for its command to end\n')
+        self.assertNotIn('send_input', asked)
 
     def test_the_copy_goes_to_the_terminal_as_an_osc_52_sequence(self):
         """Herdr catches the sequence and writes the clipboard."""
@@ -489,6 +531,167 @@ class PromptBox(unittest.TestCase):
     def test_a_tab_with_two_agents_names_none_from_a_shell(self):
         """Either could be meant, and a line typed in the other is lost."""
         self.assertIsNone(self.prompting.target(self.TAB, 'p3'))
+
+
+class Running(unittest.TestCase):
+    """Which shell a run goes to, what it types there, and what it records."""
+
+    def setUp(self):
+        self.room = tempfile.mkdtemp(prefix='herdr-run-')
+        self.addCleanup(shutil.rmtree, self.room)
+        patch = unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': self.room})
+        patch.start()
+        self.addCleanup(patch.stop)
+        import running
+        self.running = running
+
+    def free(self, *shells, standing=None, tab='w3:t1'):
+        """The free shell among these panes, in a tab beside the agent w3:p1.
+
+        In the world, bash in w3:p2 and zsh in w3:p7 are at their prompt.
+        w3:p5 is at its prompt too, with a line that the user is typing, and
+        w3:p8 runs fish. w3:p3 runs cargo, w3:p4 a shell in a container, and
+        w3:p6 a panel.
+        """
+        agent = {'pane_id': 'w3:p1', 'tab_id': 'w3:t1', 'agent': 'claude'}
+        panes = [agent, *({'pane_id': shell, 'tab_id': tab} for shell in shells)]
+        return self.running.free_shell(panes, agent, standing)[0]['pane_id']
+
+    def test_a_shell_is_free_when_it_has_the_terminal_back(self):
+        """A server that reports no process gives no free shell."""
+        at = self.running.at_prompt
+        self.assertTrue(at({'shell_pid': 7, 'foreground_process_group_id': 7}))
+        self.assertFalse(at({'shell_pid': 7, 'foreground_process_group_id': 9}))
+        self.assertFalse(at({}))
+
+    def test_the_run_goes_to_the_shell_at_its_prompt(self):
+        self.assertEqual(self.free('w3:p2', 'w3:p3', 'w3:p4', 'w3:p6'), 'w3:p2')
+
+    def test_a_busy_shell_a_container_and_a_panel_take_no_run(self):
+        with self.assertRaisesRegex(self.running.NoRun, '^open a shell in this tab'):
+            self.free('w3:p3', 'w3:p4', 'w3:p6')
+
+    def test_a_free_shell_of_another_tab_takes_no_run(self):
+        with self.assertRaisesRegex(self.running.NoRun, '^open a shell in this tab'):
+            self.free('w3:p2', tab='w3:t2')
+
+    def test_of_two_free_shells_the_run_takes_the_one_you_stand_in_else_the_first(self):
+        self.assertEqual(self.free('w3:p2', 'w3:p7'), 'w3:p2')
+        self.assertEqual(self.free('w3:p2', 'w3:p7', standing='w3:p7'), 'w3:p7')
+
+    def test_a_shell_with_a_line_typed_takes_no_run(self):
+        with self.assertRaisesRegex(self.running.NoRun,
+                                    '^clear the line of the free shell first'):
+            self.free('w3:p5')
+
+    def test_a_shell_that_reads_no_heredoc_takes_no_run(self):
+        with self.assertRaisesRegex(self.running.NoRun,
+                                    '^open bash or zsh in this tab: .* which fish '):
+            self.free('w3:p8')
+
+    def test_a_line_is_empty_when_it_ends_on_a_prompt(self):
+        for screen in ('out\nuser@host:~/w$ \n\n', 'host% ', '❯ ', 'root@host:/# '):
+            self.assertTrue(self.running.empty_line(screen), screen)
+        for screen in ('user@host:~/w$ ls -la', ''):
+            self.assertFalse(self.running.empty_line(screen), screen)
+
+    def test_a_block_with_a_line_that_would_cut_the_run_is_refused(self):
+        for block in ('make\nEND_OF_STEPS', '# ---- step 9\nls'):
+            with self.subTest(block), self.assertRaisesRegex(self.running.NoRun,
+                                                             r'^copy this block with \$'):
+                self.running.check([block])
+        self.running.check(['echo END_OF_STEPS', '  # ---- step'])
+
+    def test_the_shell_gets_the_script_and_the_blocks_with_no_enter(self):
+        with unittest.mock.patch.dict(os.environ, {'HOME': '/home/u'}):
+            text = self.running.typed('/home/u/.local/state/herdr-claude-copy/runs/d-3',
+                                      ['echo a', 'ls\npwd'])
+        self.assertEqual(text, "sh ~/.local/state/herdr-claude-copy/runs/d-3/run "
+                               "<<'END_OF_STEPS'\n# ---- step 1\necho a\n"
+                               "# ---- step 2\nls\npwd\nEND_OF_STEPS")
+
+    def test_a_run_starts_as_a_script_in_a_directory_of_its_own(self):
+        run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh',
+                                   day='2026-10-27')
+        self.assertEqual(run, os.path.join(self.room, 'herdr-claude-copy', 'runs',
+                                           '2026-10-27-1'))
+        self.assertEqual(os.listdir(run), ['run'])
+        self.assertEqual(os.stat(run).st_mode & 0o777, 0o700)
+
+    def test_a_run_never_writes_through_a_link_planted_at_its_path(self):
+        root = os.path.join(self.room, 'herdr-claude-copy', 'runs')
+        os.makedirs(root)
+        elsewhere = os.path.join(self.room, 'elsewhere')
+        os.mkdir(elsewhere)
+        os.symlink(elsewhere, os.path.join(root, '2026-10-27-1'))
+        run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh',
+                                   day='2026-10-27')
+        self.assertEqual(os.path.basename(run), '2026-10-27-2')
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    def enter(self, text):
+        """The Enter of the user, in a session with no terminal, so that no
+        step takes the terminal of the suite as its input.
+
+        $SHELL names a program that runs nothing, as a pane may inherit the
+        $SHELL of another shell: a step runs in the shell of the pane.
+        """
+        return subprocess.run(text + '\n', shell=True, check=False, cwd=self.room,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=30, env=dict(os.environ, SHELL='/bin/false'),
+                              start_new_session=True)
+
+    def test_a_shell_missing_from_the_path_starts_no_run(self):
+        run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'nosuchsh')
+        out = self.enter(self.running.typed(run, ['ls']))
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('add nosuchsh to the PATH', out.stderr)
+        self.assertEqual(os.listdir(run), ['run'])
+
+    def start(self, *blocks, edit=lambda text: text):
+        """A run of these blocks, typed, edited by the user and started: its
+        directory, the text typed, and its job file."""
+        run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh')
+        text = self.running.typed(run, list(blocks))
+        out = self.enter(edit(text))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return run, text, pathlib.Path(run, 'job').read_text().splitlines()
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_each_step_keeps_its_terminal_and_a_failure_stops_nothing(self):
+        """A status other than 0 is often the answer that the step was for."""
+        run, _, job = self.start('echo "in $STEP_DIR"; exit 3', 'echo two')
+        self.assertEqual(job, ['agent w3:p1', 'shell w3:p2', 'step 1', 'step 2',
+                               '=== START 1', '=== END 1 rc=3', '=== START 2',
+                               '=== END 2 rc=0', '=== DONE'])
+        self.assertIn(f'in {run}/1', pathlib.Path(run, '1', 'tty.log').read_text())
+        self.assertIn('two', pathlib.Path(run, '2', 'tty.log').read_text())
+        self.assertEqual(sorted(os.listdir(run)), ['1', '1.sh', '2', '2.sh', 'job', 'run'])
+        self.assertEqual(os.listdir(os.path.join(run, '1')), ['tty.log'])
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_ctrl_c_stops_the_whole_run(self):
+        """The shell of a step that Ctrl+C stops dies of SIGINT."""
+        run, _, job = self.start('kill -INT $$', 'echo never')
+        self.assertEqual(job[4:], ['=== START 1', '=== END 1 rc=130', '=== DONE'])
+        self.assertFalse(os.path.exists(os.path.join(run, '2', 'tty.log')))
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_the_same_run_typed_again_runs_nothing(self):
+        """The history of the shell keeps the text of a run."""
+        run, text, job = self.start('echo once')
+        again = self.enter(text)
+        self.assertEqual(again.returncode, 1)
+        self.assertIn('press * in the picker for a new one', again.stderr)
+        self.assertEqual(pathlib.Path(run, 'job').read_text().splitlines(), job)
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_the_run_takes_the_blocks_as_the_user_left_them(self):
+        """A mark of a step that the user took out joins two blocks into one step."""
+        run, _, _ = self.start('echo one', 'echo two',
+                               edit=lambda text: text.replace('# ---- step 2\n', ''))
+        self.assertEqual(pathlib.Path(run, '1.sh').read_text(), 'echo one\necho two\n')
+        self.assertFalse(os.path.exists(os.path.join(run, '2.sh')))
 
 
 class Resolution(unittest.TestCase):

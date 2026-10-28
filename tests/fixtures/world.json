@@ -53,7 +53,59 @@
       "terminal_title_stripped": "bash"
     }
   ],
+  "processes": {
+    "w1:p2": {
+      "shell_pid": 210,
+      "foreground_process_group_id": 230,
+      "foreground_processes": [{"pid": 230, "name": "make"}]
+    },
+    "w2:p2": {
+      "shell_pid": 320,
+      "foreground_process_group_id": 320,
+      "foreground_processes": [{"pid": 320, "name": "bash"}]
+    },
+    "w3:p2": {
+      "shell_pid": 420,
+      "foreground_process_group_id": 420,
+      "foreground_processes": [{"pid": 420, "name": "bash"}]
+    },
+    "w3:p3": {
+      "shell_pid": 430,
+      "foreground_process_group_id": 431,
+      "foreground_processes": [{"pid": 431, "name": "cargo"}]
+    },
+    "w3:p4": {
+      "shell_pid": 440,
+      "foreground_process_group_id": 441,
+      "foreground_processes": [{"pid": 441, "name": "podman"}]
+    },
+    "w3:p5": {
+      "shell_pid": 450,
+      "foreground_process_group_id": 450,
+      "foreground_processes": [{"pid": 450, "name": "zsh"}]
+    },
+    "w3:p6": {
+      "shell_pid": 460,
+      "foreground_process_group_id": 461,
+      "foreground_processes": [{"pid": 461, "name": "python3"}]
+    },
+    "w3:p7": {
+      "shell_pid": 470,
+      "foreground_process_group_id": 470,
+      "foreground_processes": [{"pid": 470, "name": "zsh"}]
+    },
+    "w3:p8": {
+      "shell_pid": 480,
+      "foreground_process_group_id": 480,
+      "foreground_processes": [{"pid": 480, "name": "fish"}]
+    }
+  },
   "screens": {
-    "w2:p1": "\u25cf Done\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\u276f\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u23f5\u23f5 auto mode on\n"
+    "w2:p1": "\u25cf Done\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\u276f\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u23f5\u23f5 auto mode on\n",
+    "w2:p2": "user@host:~/dev/app$ ",
+    "w3:p2": "make: done\nuser@host:~/w$ \n\n",
+    "w3:p5": "user@host:~/w% git push --force",
+    "w3:p7": "host% ",
+    "w3:p8": "user@host ~/w> "
   }
 }
