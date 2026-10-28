@@ -17,6 +17,7 @@ import pathlib
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -533,8 +534,25 @@ class PromptBox(unittest.TestCase):
         self.assertIsNone(self.prompting.target(self.TAB, 'p3'))
 
 
+def enter(text, room):
+    """The Enter of the user, in a session with no terminal, so that no step
+    takes the terminal of the suite as its input.
+
+    $SHELL names a program that runs nothing, as a pane may inherit the $SHELL
+    of another shell: a step runs in the shell of the pane.
+    """
+    return subprocess.run(text + '\n', shell=True, check=False, cwd=room,
+                          stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          timeout=30, env=dict(os.environ, SHELL='/bin/false'),
+                          start_new_session=True)
+
+
 class Running(unittest.TestCase):
-    """Which shell a run goes to, what it types there, and what it records."""
+    """Which shell a run goes to, what it types there, and what it records.
+
+    The waiter of a run is a program that does nothing, and the class Waking
+    runs the real one.
+    """
 
     def setUp(self):
         self.room = tempfile.mkdtemp(prefix='herdr-run-')
@@ -544,6 +562,9 @@ class Running(unittest.TestCase):
         self.addCleanup(patch.stop)
         import running
         self.running = running
+        waiter = unittest.mock.patch.object(running, 'WAITER', ('true',))
+        waiter.start()
+        self.addCleanup(waiter.stop)
 
     def free(self, *shells, standing=None, tab='w3:t1'):
         """The free shell among these panes, in a tab beside the agent w3:p1.
@@ -611,12 +632,18 @@ class Running(unittest.TestCase):
                                "# ---- step 2\nls\npwd\nEND_OF_STEPS")
 
     def test_a_run_starts_as_a_script_in_a_directory_of_its_own(self):
+        """The directory of the runs and of the locks may come from a umask
+        that lets the group in."""
+        mine = os.path.join(self.room, 'herdr-claude-copy')
+        os.mkdir(mine)
+        os.chmod(mine, 0o775)
         run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh',
                                    day='2026-10-27')
         self.assertEqual(run, os.path.join(self.room, 'herdr-claude-copy', 'runs',
                                            '2026-10-27-1'))
         self.assertEqual(os.listdir(run), ['run'])
-        self.assertEqual(os.stat(run).st_mode & 0o777, 0o700)
+        for mine in (run, os.path.dirname(os.path.dirname(run))):
+            self.assertEqual(os.stat(mine).st_mode & 0o777, 0o700, mine)
 
     def test_a_run_never_writes_through_a_link_planted_at_its_path(self):
         root = os.path.join(self.room, 'herdr-claude-copy', 'runs')
@@ -630,16 +657,7 @@ class Running(unittest.TestCase):
         self.assertEqual(os.listdir(elsewhere), [])
 
     def enter(self, text):
-        """The Enter of the user, in a session with no terminal, so that no
-        step takes the terminal of the suite as its input.
-
-        $SHELL names a program that runs nothing, as a pane may inherit the
-        $SHELL of another shell: a step runs in the shell of the pane.
-        """
-        return subprocess.run(text + '\n', shell=True, check=False, cwd=self.room,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              timeout=30, env=dict(os.environ, SHELL='/bin/false'),
-                              start_new_session=True)
+        return enter(text, self.room)
 
     def test_a_shell_missing_from_the_path_starts_no_run(self):
         run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'nosuchsh')
@@ -692,6 +710,268 @@ class Running(unittest.TestCase):
                                edit=lambda text: text.replace('# ---- step 2\n', ''))
         self.assertEqual(pathlib.Path(run, '1.sh').read_text(), 'echo one\necho two\n')
         self.assertFalse(os.path.exists(os.path.join(run, '2.sh')))
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_the_waiter_starts_once_the_head_is_written_and_before_the_first_step(self):
+        """The waiter reads the agent and the steps in the head, and must be
+        there when a step closes the shell."""
+        record = ('import shutil, sys; '
+                  'shutil.copy(sys.argv[1] + "/job", sys.argv[1] + "/job-at-wait"); '
+                  'open(sys.argv[1] + "/pid", "w").write(sys.argv[2])')
+        with unittest.mock.patch.object(self.running, 'WAITER',
+                                        (sys.executable, '-c', record)):
+            run, _, job = self.start('echo one', 'echo two')
+        self.assertEqual(pathlib.Path(run, 'job-at-wait').read_text().splitlines(), job[:4])
+        self.assertTrue(pathlib.Path(run, 'pid').read_text().isdigit())
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_the_end_of_a_run_says_how_to_cancel_its_wake(self):
+        run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh')
+        out = self.enter(self.running.typed(run, ['echo one']))
+        self.assertEqual(out.stdout.splitlines()[-1],
+                         f'Claude hears of this run once its prompt box is free. '
+                         f'To cancel, run: touch {run}/no-wake')
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_a_waiter_that_cannot_start_stops_no_step(self):
+        with unittest.mock.patch.object(self.running, 'WAITER', ('false',)):
+            run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh')
+        out = self.enter(self.running.typed(run, ['echo one']))
+        self.assertIn('Claude will not hear of this run when it ends', out.stderr)
+        self.assertNotIn('no-wake', out.stdout)
+        self.assertEqual(pathlib.Path(run, 'job').read_text().splitlines()[-1], '=== DONE')
+
+
+class Waking(unittest.TestCase):
+    """The end of a run wakes the agent that the run names.
+
+    The world gives w2:p1, an idle agent with an empty box on screen, and
+    w2:p2, the shell of its tab.
+    """
+
+    FULL = ('=== START 1', '=== END 1 rc=2', '=== START 2', '=== END 2 rc=0', '=== DONE')
+
+    def setUp(self):
+        self.room = tempfile.mkdtemp(prefix='herdr-wake-')
+        self.addCleanup(shutil.rmtree, self.room)
+        self.runs = os.path.join(self.room, 'herdr-claude-copy', 'runs')
+        os.makedirs(self.runs)
+        import waking
+        self.waking = waking
+        world = sys.modules['server'].WORLD
+        self.agent = next(p for p in world['panes'] if p['pane_id'] == 'w2:p1')
+        self.screens = world['screens']
+        # a prompt sets the agent to work in the world that every test reads
+        for patch in (unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': self.room}),
+                      unittest.mock.patch.multiple(waking, TICK=0.01, HOLD=0.01, STARTED=0.05,
+                                                   GIVE_UP=0.05),
+                      unittest.mock.patch.dict(self.agent)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def job(self, *marks, agent='w2:p1', n=1, steps=2):
+        """A run of the agent and its job file, as running.py states it."""
+        run = os.path.join(self.runs, f'2026-10-28-{n}')
+        os.makedirs(run, exist_ok=True)
+        head = f'agent {agent}\nshell w2:p2\n' + ''.join(f'step {step}\n'
+                                                         for step in range(1, steps + 1))
+        pathlib.Path(run, 'job').write_text(head + ''.join(f'{mark}\n' for mark in marks))
+        return run
+
+    @staticmethod
+    def prompts(log):
+        asked = pathlib.Path(log).read_text() if os.path.exists(log) else ''
+        return [line for line in asked.splitlines() if line.startswith('agent.prompt')]
+
+    def deliver(self, run, cut=False, ended=None, screen=None, **pane):
+        """One wait for the box, with the agent w2:p1 changed by pane and its
+        screen: how the wait ended, and the prompts sent."""
+        screens = {} if screen is None else {'w2:p1': screen}
+        with unittest.mock.patch.dict(self.agent, pane), \
+                unittest.mock.patch.dict(self.screens, screens), stub_log() as log:
+            said = self.waking.deliver(run, self.waking.job(run), cut,
+                                       time.time() if ended is None else ended)
+            return said, self.prompts(log)
+
+    def test_the_wake_tells_how_each_step_ended_and_where_its_files_are(self):
+        run = self.job(*self.FULL)
+        said, prompts = self.deliver(run)
+        self.assertEqual(said, 'woke w2:p1')
+        self.assertEqual(prompts, [(
+            f'agent.prompt w2:p1 The user ran blocks of your answer in a shell of this '
+            f'tab, as run 2026-10-28-1, and the run is over. Step 1 ended with rc=2, '
+            f'step 2 with rc=0. The files of step N are in {run}/N: the log of its tool '
+            f'if there is one, then tty.log, its terminal output with the header of '
+            f'script and color codes. Read them, then go on with the task.')])
+
+    def test_a_run_is_over_after_its_last_step_or_a_ctrl_c(self):
+        """The run writes DONE right after a Ctrl+C, and a read may fall
+        between the two lines."""
+        def over(*marks):
+            return self.waking.over(self.waking.job(self.job(*marks)))
+        self.assertTrue(over(*self.FULL))
+        self.assertTrue(over('=== START 1', '=== END 1 rc=0', '=== START 2', '=== END 2 rc=1'))
+        self.assertTrue(over('=== START 1', '=== END 1 rc=130'))
+        self.assertFalse(over('=== START 1', '=== END 1 rc=2', '=== START 2'))
+
+    def test_a_mark_half_written_is_read_once_whole(self):
+        run = self.job('=== START 1')
+        with open(os.path.join(run, 'job'), 'a') as fp:
+            fp.write('=== END 1 rc=')
+        self.assertEqual(self.waking.job(run)['ends'], [])
+
+    def test_a_ctrl_c_is_told_as_the_end_of_the_run(self):
+        _, prompts = self.deliver(self.job('=== START 1', '=== END 1 rc=130', '=== DONE'))
+        self.assertIn('and the run is over. Step 1 ended with rc=130, a Ctrl+C, and the run '
+                      'stopped there. The files', prompts[0])
+
+    def test_a_run_whose_process_ended_before_its_end_was_cut(self):
+        """The shell closed, and took the run with it."""
+        run = self.job('=== START 1', '=== END 1 rc=0', '=== START 2')
+        gone = subprocess.Popen(['true'])
+        gone.wait()
+        self.assertTrue(self.waking.end(run, gone.pid, '1')[1])
+        _, prompts = self.deliver(run, cut=True)
+        self.assertIn('Step 1 ended with rc=0, and the shell closed during step 2. The files',
+                      prompts[0])
+
+    def test_a_pid_that_another_process_took_is_a_run_that_ended(self):
+        """A process that began at another tick is not the run."""
+        run = self.job('=== START 1')
+        self.assertIsNotNone(self.waking.born(os.getpid()))
+        self.assertTrue(self.waking.end(run, os.getpid(), 'another tick')[1])
+        self.assertFalse(self.waking.end(self.job(*self.FULL), os.getpid(), 'another tick')[1])
+
+    def test_an_agent_at_work_or_on_a_dialog_gets_the_wake_after(self):
+        """A line typed during a turn waits behind it, and one typed under a
+        dialog answers it."""
+        run = self.job(*self.FULL)
+        for status in ('working', 'blocked'):
+            with self.subTest(status=status):
+                said, prompts = self.deliver(run, agent_status=status)
+                self.assertEqual(prompts, [])
+                self.assertTrue(said.endswith(f': the agent is {status}'), said)
+        self.assertEqual(len(self.deliver(run)[1]), 1)
+
+    def test_a_box_out_of_sight_or_holding_a_line_waits(self):
+        run = self.job(*self.FULL)
+        for screen, why in (('  scrolled up, far from the box\n', 'is not on screen'),
+                            ('❯ half a sentence\n', 'holds a line')):
+            with self.subTest(screen=screen):
+                said, prompts = self.deliver(run, screen=screen)
+                self.assertEqual(prompts, [])
+                self.assertTrue(said.endswith(why), said)
+
+    def test_a_run_whose_agent_is_gone_wakes_nobody(self):
+        """The idle agent of the same tab is not the one the run names."""
+        for agent in ('w2:p9', 'w2:p2'):
+            with self.subTest(agent=agent):
+                said, prompts = self.deliver(self.job(*self.FULL, agent=agent))
+                self.assertEqual((said, prompts), (f'{agent} holds no agent, no wake', []))
+
+    def test_a_server_that_does_not_answer_is_waited_for(self):
+        """An empty pane list would read as every agent gone."""
+        with unittest.mock.patch.object(self.waking.api, 'panes', return_value=[]):
+            said, prompts = self.deliver(self.job(*self.FULL))
+        self.assertEqual(prompts, [])
+        self.assertTrue(said.endswith(': the server did not answer'), said)
+
+    def test_a_no_wake_file_cancels_the_wake(self):
+        run = self.job(*self.FULL)
+        pathlib.Path(run, 'no-wake').touch()
+        self.assertEqual(self.deliver(run), ('no-wake found, no wake', []))
+
+    def test_the_wait_ends_a_day_after_the_end_of_the_run(self):
+        with unittest.mock.patch.object(self.waking, 'GIVE_UP', 24 * 3600):
+            said, prompts = self.deliver(self.job(*self.FULL), ended=time.time() - 24 * 3600)
+        self.assertEqual((said, prompts), ('no wake 24 hours after the end of the run', []))
+
+    def test_a_run_of_no_step_wakes_nobody(self):
+        said, prompts = self.deliver(self.job('=== DONE', steps=0))
+        self.assertEqual((said, prompts), ('the run has no step, and nothing to tell', []))
+
+    def test_a_refused_prompt_is_tried_again(self):
+        """A dialog may open between the look at the box and the prompt, and
+        api.call answers agent_blocked as it answers a lost reply."""
+        errors = sys.modules['server'].ERRORS
+        with unittest.mock.patch.dict(errors, {'agent.prompt': 'agent_blocked'}):
+            said, prompts = self.deliver(self.job(*self.FULL))
+        self.assertGreater(len(prompts), 1)
+        self.assertTrue(said.endswith(': the prompt was refused, or its reply lost'), said)
+
+    def test_two_runs_of_one_agent_wake_it_in_two_turns(self):
+        """The first wake starts a turn, and a second one typed then would
+        wait behind it."""
+        first, second = self.job(*self.FULL), self.job(*self.FULL, n=2)
+        with unittest.mock.patch.dict(self.agent), stub_log() as log:
+            self.assertEqual(self.waking.deliver(first, self.waking.job(first), False,
+                                                 time.time()), 'woke w2:p1')
+            said = self.waking.deliver(second, self.waking.job(second), False, time.time())
+            self.assertTrue(said.endswith(': the agent is working'), said)
+            prompts = self.prompts(log)
+        self.assertEqual(len(prompts), 1)
+        _, prompts = self.deliver(second)
+        self.assertIn('as run 2026-10-28-2,', prompts[0])
+
+    def test_a_wake_waits_while_another_one_holds_the_agent(self):
+        """The lock is held from the look at the box until the turn shows."""
+        run = self.job(*self.FULL)
+        held = self.waking.lock(run, 'w2:p1')
+        try:
+            said, prompts = self.deliver(run)
+        finally:
+            os.close(held)
+        self.assertEqual(prompts, [])
+        self.assertTrue(said.endswith(': another wake of this agent was on its way'), said)
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.runs))),
+                         ['runs', 'wake-w2:p1.lock'])
+
+    def wait_for(self, run):
+        """What the waiter of the run wrote, once it ended."""
+        log = pathlib.Path(run, 'wake.log')
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            said = log.read_text() if log.exists() else ''
+            if said.endswith('\n'):
+                return said
+            time.sleep(0.1)
+        self.fail(f'the waiter of {run} wrote nothing')
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_a_run_wakes_its_agent_once_over(self):
+        """The run starts the real waiter, which outlives it."""
+        import running
+        with stub_log() as log:
+            run = running.prepare(self.agent, {'pane_id': 'w2:p2'}, 'sh')
+            out = enter(running.typed(run, ['exit 3', 'echo two']), self.room)
+            said = self.wait_for(run)
+            prompts = self.prompts(log)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue(said.endswith(' woke w2:p1\n'), said)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn('Step 1 ended with rc=3, step 2 with rc=0. The files', prompts[0])
+
+    def test_the_waiter_outlives_a_shell_that_closes(self):
+        """A pane that closes kills what its shell runs: the run, and not the
+        waiter, which tells the agent."""
+        run = self.job('=== START 1')
+        with stub_log() as log:
+            shell = subprocess.Popen(
+                ['sh', '-c', '"$0" "$1" "$2" "$$" && exec sleep 60',
+                 sys.executable, os.path.join(BIN, 'waking.py'), run],
+                start_new_session=True)
+            # the waiter has left once the shell has become the sleep
+            deadline = time.time() + 10
+            while not pathlib.Path(f'/proc/{shell.pid}/cmdline').read_bytes() \
+                    .startswith(b'sleep') and time.time() < deadline:
+                time.sleep(0.05)
+            os.killpg(shell.pid, signal.SIGKILL)
+            shell.wait()
+            said = self.wait_for(run)
+            prompts = self.prompts(log)
+        self.assertTrue(said.endswith(' woke w2:p1\n'), said)
+        self.assertIn('and the run is over. The shell closed during step 1. The files',
+                      prompts[0])
 
 
 class Resolution(unittest.TestCase):

@@ -5,8 +5,17 @@ does for a command in the prompt box of Claude. The user reads the blocks
 where they will run, on the host and with the rights of the user, and
 starts the run with Enter. Each block runs under script, which keeps its
 terminal output in a directory of its own, and a job file records when each
-step starts and ends. A watcher on the host reads the job file:
-docs/drift.md states its format.
+step starts and ends. Before the first step, the run starts waking.py, which
+reads the job file and tells the agent how the run ended:
+
+    agent <pane id of the agent>
+    shell <pane id of the shell>
+    step <step>                 one per step, all before the first START
+    === START <step>
+    === END <step> rc=<status>
+    === DONE                    after every step, or after a Ctrl+C (status 130)
+
+A run whose shell closes gets no DONE.
 
 A run writes only under a directory that the picker makes. An agent that
 could write there could plant a link at the path of a log, and script would
@@ -22,6 +31,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import api
 import prompting
+import waking
+
+# the Python of the picker, which runs the waiter of a run
+WAITER = (sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       'waking.py'))
 
 # how a prompt with nothing typed after it ends. Herdr reports no cursor, so
 # a last line that ends otherwise may hold a command that the user is typing,
@@ -63,6 +77,14 @@ while IFS= read -r line; do
     fi
     printf '%s\\n' "$line" >> "$run/$n.sh"
 done
+# the agent hears of the end of the run from a waiter that outlives this
+# shell, so a Ctrl+C or a shell that closes is told too
+waiting=
+if {waiter} "$run" "$$"; then
+    waiting=1
+else
+    echo "Claude will not hear of this run when it ends" >&2
+fi
 input=/dev/null
 if (exec < /dev/tty) 2>/dev/null; then input=/dev/tty; fi
 n=1
@@ -74,10 +96,13 @@ while [ -f "$run/$n.sh" ]; do
     mark "=== END $n rc=$rc"
     # a step that Ctrl+C stopped: the user wants the whole run stopped, and
     # not only its step
-    if [ "$rc" -eq 130 ]; then break; fi
+    if [ "$rc" -eq {ctrl_c} ]; then break; fi
     n=$((n + 1))
 done
 mark "=== DONE"
+if [ -n "$waiting" ]; then
+    echo "Claude hears of this run once its prompt box is free. To cancel, run: touch $run/{quiet}"
+fi
 '''
 
 
@@ -166,11 +191,15 @@ def prepare(agent, shell, name, day=None):
     directory of the run."""
     root = home()
     os.makedirs(root, mode=0o700, exist_ok=True)
+    # the waiters keep their locks beside the runs, in a directory that must be
+    # the user's alone, whatever made it first
+    os.chmod(os.path.dirname(root), 0o700)
     run = _fresh(root, day or datetime.date.today().isoformat())
     with open(os.path.join(run, 'run'), 'x') as fp:
         fp.write(RUNNER.format(run=shlex.quote(run), agent=shlex.quote(agent['pane_id']),
                                shell=shlex.quote(shell['pane_id']), name=shlex.quote(name),
-                               step=STEP))
+                               step=STEP, waiter=shlex.join(WAITER),
+                               ctrl_c=waking.CTRL_C, quiet=waking.QUIET))
     return run
 
 

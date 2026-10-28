@@ -2,7 +2,9 @@
 
 The picker asks the socket and nothing else. This answers the reads from
 tests/fixtures/world.json and accepts every write: the picker is checked for
-what it asks and what it prints, not for its effect on a server.
+what it asks and what it prints, not for its effect on a server. A prompt is
+the one write that changes the world, since the next wake must find the turn
+that it started.
 """
 
 import json
@@ -34,6 +36,21 @@ READS = {
                              pane_id=p.get('pane_id'))},
 }
 
+# the error code that a method answers with; a test that sets one clears it
+ERRORS = {}
+
+
+def prompted(params):
+    """A prompt starts a turn of the agent; a test that prompts restores the
+    pane of the agent."""
+    for pane in WORLD['panes']:
+        if pane['pane_id'] == params.get('target'):
+            pane['agent_status'] = 'working'
+    return {'type': 'agent_prompted'}
+
+
+WRITES = {'agent.prompt': prompted}
+
 
 def answer(request):
     method = request.get('method', '')
@@ -45,7 +62,10 @@ def answer(request):
         said = ' '.join(str(v) for v in params.values() if not isinstance(v, bool))
         with open(log, 'a') as fp:
             fp.write(f'{method} {said}'.rstrip() + '\n')
-    make = READS.get(method)
+    if method in ERRORS:
+        return {'id': request.get('id'),
+                'error': {'code': ERRORS[method], 'message': ERRORS[method]}}
+    make = READS.get(method) or WRITES.get(method)
     return {'id': request.get('id'), 'result': make(params) if make else {}}
 
 
