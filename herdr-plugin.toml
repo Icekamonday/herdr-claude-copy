@@ -1,6 +1,6 @@
 id = "herdr-claude-copy"
 name = "Claude copy"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
 description = "Copy the blocks of Claude's answers, or put a command in its prompt box or in a shell of the tab"
 platforms = ["linux"]
