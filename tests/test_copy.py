@@ -832,6 +832,12 @@ class Finding(unittest.TestCase):
         found = self.transcript(TWO, titled('new work'), age=60)
         self.assertEqual(self.find('new work', ONE), found)
 
+    def test_a_title_that_names_no_session_gives_way_to_the_identity(self):
+        """With CLAUDE_CODE_DISABLE_TERMINAL_TITLE, the shell sets the title."""
+        found = self.transcript(ONE, titled('build'))
+        self.transcript(TWO, titled('release'), age=60)
+        self.assertEqual(self.find('user@host: ~/w/app', ONE), found)
+
     def test_a_session_never_renamed_is_found_by_its_ai_title(self):
         found = self.transcript(ONE, {'type': 'ai-title', 'aiTitle': 'Fix the build'}, age=60)
         self.transcript(TWO, titled('other'), {'type': 'ai-title', 'aiTitle': 'Fix the build'})

@@ -289,6 +289,9 @@ def find(pane, panes):
     payloads first, then through the transcripts alone, for a user with no
     status line hook. The cwd only narrows the search, so a session that
     once ran there under another name never answers.
+
+    If the title names no session, the identity decides alone: Claude Code
+    can leave the title that the shell set.
     """
     places, strays = sources(), []
     taken = resolve_all(panes, _payloads(places, strays))
@@ -300,12 +303,14 @@ def find(pane, panes):
         raise NoTranscript('name this session with /rename, then press the key again')
     claimed = {state['session_id'] for state in taken.values()}
 
+    held = None
     if sid and sid not in claimed:
         for root, _ in places:
             path = _by_identity(root, pane.get('cwd'), sid, strays)
             # after a /resume, Herdr still holds the identity of the session before
             if path and (not title or _name(path) == title):
                 return path
+            held = held or path
 
     if title:
         recent = [(written, root, folder, stem) for root, _ in places
@@ -314,6 +319,9 @@ def find(pane, panes):
             path = _under(root, folder, stem, strays) if stem not in claimed else None
             if path and _name(path) == title:
                 return path
+
+    if held:
+        return held
 
     if strays:
         path, root = strays[0]
