@@ -30,7 +30,7 @@ Then reload the configuration with `herdr server reload-config`.
 
 ## Use
 
-Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last answer, with the cursor on its first code block.
+Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last answer, with the cursor on its first code block. As with `/copy`, an answer is the last message that Claude writes in a turn, without the words that it writes between two tools.
 
 | Key | Action |
 |---|---|
