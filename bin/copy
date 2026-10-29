@@ -68,6 +68,7 @@ OUTPUTS = ('<bash-stdout>', '<bash-stderr>', '<local-command-stdout>',
            '<local-command-stderr>')
 
 TAIL = 4 << 20      # a transcript can pass 40 MB, and the picker shows its last answers
+CUT = '(the prompt of this turn is too far back in the transcript)'
 GUTTER = 7          # the row number, the bar of the cursor, and a space each
 
 MOVES = {'j': 1, 'KEY_DOWN': 1, 'k': -1, 'KEY_UP': -1}
@@ -191,8 +192,9 @@ def answers(path):
     a command, or a record that Claude Code adds itself. A local command also
     opens a turn, but Claude writes nothing in it.
 
-    Only the tail of the transcript is read. If the start of the tail cuts
-    a turn, the answers of that turn are left out with its prompt.
+    Only the tail of the transcript is read, and its start can cut a turn.
+    The answers of that turn stay, under CUT, since one turn can write more
+    than the tail holds. The first of them can lose its beginning.
     """
     try:
         with open(path, 'rb') as fp:
@@ -202,9 +204,9 @@ def answers(path):
             lines = fp.readlines()
     except (OSError, TypeError):
         return []
-    if size > TAIL:
-        lines = lines[1:]
     found, prompt, last = [], None, None
+    if size > TAIL:
+        lines, prompt = lines[1:], CUT
     for raw in lines:
         try:
             record = json.loads(raw)

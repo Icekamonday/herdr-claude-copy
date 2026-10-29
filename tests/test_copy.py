@@ -212,9 +212,10 @@ class Picking(unittest.TestCase):
         self.assertEqual([(page['prompt'], page['text']) for page in book],
                          [('fix the bug', 'Looking.'), ('fix the bug', 'Fixed.')])
 
-    def test_a_long_transcript_is_read_from_its_tail(self):
-        """A turn that the start of the tail cuts is left out with its prompt."""
-        kept = [claude('m1', text('Also cut.')), user('second question'),
+    def test_a_turn_that_the_tail_cuts_keeps_its_answers(self):
+        """One turn can write more than the tail, so its answers cannot wait for
+        its prompt."""
+        kept = [claude('m1', text('After the cut.')), user('second question'),
                 claude('m2', text('Kept.'))]
         with tempfile.TemporaryDirectory() as room:
             path = os.path.join(room, 'session.jsonl')
@@ -223,7 +224,18 @@ class Picking(unittest.TestCase):
             self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
             book = self.copy.pages(path)
         self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [('second question', 'Kept.')])
+                         [(self.copy.CUT, 'After the cut.'), ('second question', 'Kept.')])
+
+    def test_a_tail_inside_one_turn_still_gives_its_answers(self):
+        kept = [claude('m1', text('Looking.')), claude('m2', text('Done.'))]
+        with tempfile.TemporaryDirectory() as room:
+            path = os.path.join(room, 'session.jsonl')
+            write_transcript(path, [user('long task'),
+                                    claude('m0', text('x' * 400)), *kept])
+            self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
+            book = self.copy.pages(path)
+        self.assertEqual([(page['prompt'], page['text']) for page in book],
+                         [(self.copy.CUT, 'Looking.'), (self.copy.CUT, 'Done.')])
 
     def test_tab_goes_from_code_to_code_and_stops_at_the_last(self):
         book = self.book('a\n\n```sh\none\n```\n\nb\n\n```sh\ntwo\n```\n\nc')
