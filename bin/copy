@@ -184,17 +184,17 @@ def _output(content):
 def answers(path):
     """The answers of a session, oldest first, each with the prompt it follows.
 
-    An answer is one message of Claude, as Claude's own /copy takes it. A
-    turn that runs tools holds several: a few words between two tools, and
-    the answer at the end. The records of one message share its id.
+    An answer is the last message of Claude in a turn, as Claude's own /copy
+    takes it. A turn that runs tools holds other messages before it, a few
+    words between two tools. The records of one message share its id.
 
     Each user record opens a turn, unless it is a tool result, the output of
     a command, or a record that Claude Code adds itself. A local command also
     opens a turn, but Claude writes nothing in it.
 
     Only the tail of the transcript is read, and its start can cut a turn.
-    The answers of that turn stay, under CUT, since one turn can write more
-    than the tail holds. The first of them can lose its beginning.
+    The answer of that turn stays, under CUT, since one turn can write more
+    than the tail holds. It can lose its beginning.
     """
     try:
         with open(path, 'rb') as fp:
@@ -204,9 +204,10 @@ def answers(path):
             lines = fp.readlines()
     except (OSError, TypeError):
         return []
-    found, prompt, last = [], None, None
+    found, turn = [], None
     if size > TAIL:
-        lines, prompt = lines[1:], CUT
+        lines, turn = lines[1:], {'prompt': CUT, 'id': None, 'texts': []}
+        found.append(turn)
     for raw in lines:
         try:
             record = json.loads(raw)
@@ -219,21 +220,20 @@ def answers(path):
         if record.get('type') == 'user':
             if not record.get('isMeta') and not record.get('isCompactSummary') \
                     and not _tool_result(content) and not _output(content):
-                prompt, last = _prompt(content), None
-        elif record.get('type') == 'assistant' and prompt is not None \
+                turn = {'prompt': _prompt(content), 'id': None, 'texts': []}
+                found.append(turn)
+        elif record.get('type') == 'assistant' and turn is not None \
                 and isinstance(content, list):
             texts = [block['text'] for block in content
                      if isinstance(block, dict) and block.get('type') == 'text'
                      and block.get('text')]
             if not texts:
                 continue
-            if found and last is not None and last == message.get('id'):
-                found[-1]['texts'].extend(texts)
-            else:
-                found.append({'prompt': prompt, 'texts': texts})
-            last = message.get('id')
+            if turn['id'] != message.get('id'):
+                turn['id'], turn['texts'] = message.get('id'), []
+            turn['texts'].extend(texts)
     return [{'prompt': answer['prompt'], 'text': '\n\n'.join(answer['texts'])}
-            for answer in found]
+            for answer in found if answer['texts']]
 
 
 def _dedent(line, width):

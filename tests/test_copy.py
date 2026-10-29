@@ -168,7 +168,7 @@ class Picking(unittest.TestCase):
         self.assertEqual(found[1]['text'], 'for f in *; do\n  echo "$f"\ndone')
         self.assertEqual(found[1]['indent'], 2)
 
-    def test_each_message_of_claude_is_an_answer_under_the_prompt_of_its_turn(self):
+    def test_the_last_message_of_claude_is_the_answer_of_its_turn(self):
         """A tool result and a record that Claude Code adds keep the turn open.
         A local command opens a turn with no text, and a subagent answers no one."""
         with tempfile.TemporaryDirectory() as room:
@@ -179,7 +179,8 @@ class Picking(unittest.TestCase):
                 claude('m1', {'type': 'tool_use', 'id': 't1', 'name': 'Bash',
                               'input': {}}),
                 user([{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]),
-                claude('m2', text('Found it.')),
+                claude('m2', text('Found')),
+                claude('m2', text('it.')),
                 user('<system-reminder>a reminder</system-reminder>', isMeta=True),
                 user('<command-name>/copy</command-name>'),
                 user('<local-command-stdout>Copied</local-command-stdout>'),
@@ -188,10 +189,9 @@ class Picking(unittest.TestCase):
                 claude('m4', text('a subagent'), isSidechain=True),
             ])
             book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book[:2]],
-                         [('first question', 'Looking.'),
-                          ('first question', 'Found it.')])
-        self.assertEqual(book[-1]['prompt'], 'second question')
+        self.assertEqual([(page['prompt'], page['text']) for page in book],
+                         [('first question', 'Found\n\nit.'),
+                          ('second question', 'Here:\n\n```sh\nls\n```')])
         state = self.copy.opened(book)
         self.assertEqual(self.copy.selection(state, book[-1]), ('ls', 'the sh block'))
 
@@ -210,10 +210,10 @@ class Picking(unittest.TestCase):
             ])
             book = self.copy.pages(path)
         self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [('fix the bug', 'Looking.'), ('fix the bug', 'Fixed.')])
+                         [('fix the bug', 'Fixed.')])
 
-    def test_a_turn_that_the_tail_cuts_keeps_its_answers(self):
-        """One turn can write more than the tail, so its answers cannot wait for
+    def test_a_turn_that_the_tail_cuts_keeps_its_answer(self):
+        """One turn can write more than the tail, so its answer cannot wait for
         its prompt."""
         kept = [claude('m1', text('After the cut.')), user('second question'),
                 claude('m2', text('Kept.'))]
@@ -226,7 +226,7 @@ class Picking(unittest.TestCase):
         self.assertEqual([(page['prompt'], page['text']) for page in book],
                          [(self.copy.CUT, 'After the cut.'), ('second question', 'Kept.')])
 
-    def test_a_tail_inside_one_turn_still_gives_its_answers(self):
+    def test_a_tail_inside_one_turn_still_gives_its_answer(self):
         kept = [claude('m1', text('Looking.')), claude('m2', text('Done.'))]
         with tempfile.TemporaryDirectory() as room:
             path = os.path.join(room, 'session.jsonl')
@@ -235,7 +235,7 @@ class Picking(unittest.TestCase):
             self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
             book = self.copy.pages(path)
         self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [(self.copy.CUT, 'Looking.'), (self.copy.CUT, 'Done.')])
+                         [(self.copy.CUT, 'Done.')])
 
     def test_tab_goes_from_code_to_code_and_stops_at_the_last(self):
         book = self.book('a\n\n```sh\none\n```\n\nb\n\n```sh\ntwo\n```\n\nc')
