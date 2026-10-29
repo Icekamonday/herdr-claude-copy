@@ -34,14 +34,19 @@ Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last an
 
 | Key | Action |
 |---|---|
-| `j` `k`, `Tab` `Shift+Tab` | next or previous block, or block of code |
+| `j` `k` or `↓` `↑`, `Tab` `Shift+Tab` | next or previous block, or block of code |
+| `g` `G` | first or last block |
 | `Space`, `a` | mark the block at the cursor, or every block |
 | `Enter` | copy the marked blocks, else the block at the cursor |
 | `!` | copy their shell code behind one `!`, and put it in Claude's prompt box |
 | `$` | copy their code for a shell, with no `!` |
 | `*` | put their shell code in a free shell of the tab, as a run of one step per block |
-| `p` `n` | previous or next answer |
-| `?`, `q` | every key, quit |
+| `A` | copy the whole answer as written, and quit |
+| `p` `n` or `←` `→` | previous or next answer |
+| `Ctrl+D` `Ctrl+U` | scroll half a page |
+| `?`, `q` `Esc` | every key, quit |
+
+The picker works with the keyboard alone, and a click does nothing.
 
 The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard write. The picker finds the session by the title of its pane, which Claude Code sets to the session name, then by the session id that Herdr holds. If the title names no session, the session id decides alone: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, for example, the pane keeps the title that the shell set. If neither works, name the session with `/rename`.
 

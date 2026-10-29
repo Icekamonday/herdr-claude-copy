@@ -79,10 +79,10 @@ SCROLLS = {'\x04': 1, 'KEY_NPAGE': 1, '\x15': -1, 'KEY_PPAGE': -1}
 COPY = ('\n', '\r', 'KEY_ENTER')
 TO_RUN = {'!': 'claude', '$': 'shell', '*': 'run'}
 QUIT = ('q', '\x1b')
-FOOTER = ('enter copy · ! for Claude · $ for a shell · * for a run · space mark'
-          ' · a all · ? help · q quit')
+FOOTER = ('↑↓ move · enter copy · ! for Claude · $ for a shell · * for a run'
+          ' · space mark · a all · ? help · q quit')
 HELP = (
-    ('j  k', 'next or previous block'),
+    ('j  k  ↓  ↑', 'next or previous block'),
     ('Tab  S-Tab', 'next or previous block of code'),
     ('g  G', 'first or last block'),
     ('Space', 'mark the block at the cursor, for a copy of several'),
@@ -92,7 +92,7 @@ HELP = (
     ('$', 'copy its code to run in a shell: no ! at all'),
     ('*', 'put its shell code in a free shell of the tab, as a run of steps'),
     ('A', 'copy the whole answer as written, and quit'),
-    ('p  n', 'previous or next answer'),
+    ('p  n  ←  →', 'previous or next answer'),
     ('C-d  C-u', 'scroll half a page'),
     ('?', 'this help'),
     ('q  Esc', 'quit with no copy'),
@@ -654,7 +654,7 @@ def draw(screen, state, book, prompt, rows, look):
     """The answer under its prompt, or the help when it is asked for."""
     screen.erase()
     height, width = screen.getmaxyx()
-    put(screen, 0, 0, f" answer {state['page'] + 1}/{len(book)}", look['title'])
+    put(screen, 0, 0, f" answer {state['page'] + 1}/{len(book)} · ← →", look['title'])
     put(screen, 0, max(0, width - 8), '? help', look['help'])
     if state['help']:
         for y, (keys, what) in enumerate(HELP, 2):
