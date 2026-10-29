@@ -1,6 +1,6 @@
 id = "herdr-claude-copy"
 name = "Claude copy"
-version = "0.3.0"
+version = "0.3.1"
 min_herdr_version = "0.9.0"
 description = "Copy Claude's code blocks without the indent and the line breaks of the screen, put them in Claude's prompt box, or run them in a shell of the tab and wake Claude at the end"
 platforms = ["linux"]
