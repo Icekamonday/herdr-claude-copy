@@ -6,7 +6,7 @@ A mouse copy takes the screen grid. Claude Code draws a code block two columns i
 
 ## Requirements
 
-- Herdr 0.9.0 or later, on Linux. The `*` key asks Herdr which process runs in each shell, and was checked on Herdr 0.9.3 only.
+- Herdr 0.9.0 or later, on Linux. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
 - Python 3.10 or later at `/usr/bin/python3`, with no other package. If Pygments is installed for that Python, the picker colours the code.
 - `script` of util-linux, for the `*` key.
 
@@ -41,6 +41,7 @@ Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last an
 | `!` | copy their shell code behind one `!`, and put it in Claude's prompt box |
 | `$` | copy their code for a shell, with no `!` |
 | `*` | put their shell code in a free shell of the tab, as a run of one step per block |
+| `v` | put their code in a free shell of the tab, as `$` copies it |
 | `A` | copy the whole answer as written, and quit |
 | `p` `n` or `←` `→` | previous or next answer |
 | `w` | every message of the turn, or its last one alone |
@@ -54,6 +55,8 @@ The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard writ
 ## Run the blocks in a shell of the tab
 
 The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt: the one you stand in, else the first.
+
+The `v` key puts the code that `$` copies in the free shell as it is, and sends no Enter either. It starts no run: no step, no log, and no wake of Claude. It refuses a busy shell or a typed line as `*` does, and takes only bash, zsh or fish. Their line editors hold a bracketed paste until your Enter. Another shell, such as dash, takes each newline of the paste as an Enter and runs the lines as they arrive. Bash does the same if you turned bracketed paste off: use `$` there instead.
 
 The shell shows the blocks as they will run, behind the script of the run:
 
@@ -104,6 +107,7 @@ Each line adds to the host directory, and never replaces it. The optional second
 
 - The `!` key puts the code in Claude's prompt box and sends no Enter. When you press Enter, Claude Code runs the text in a shell with your rights, so read it first. The picker removes control characters from the text, so an answer can't end the paste early and send a line.
 - The `*` key puts the code in a shell and sends no Enter. When you press Enter, the shell runs the blocks with your rights, so read them first. The picker removes control characters from the blocks, as for the `!` key.
+- The `v` key puts the code in bash, zsh or fish and sends no Enter, without the control characters. When you press Enter, the shell runs the code with your rights, so read it first. If bracketed paste is off in that shell, each line runs as it arrives.
 - The wake that the waiter types into Claude's prompt box holds the name of the run, the status of each step and the directory of the run. It never holds what a step wrote.
 - `script` follows a link planted at the path of its log. If your agent can write the runs directory, it can plant one and make the shell write over another of your files. If it can write the directory above, it can also hold the lock of a wake and keep Claude from hearing of its runs. Check that the sandbox of your agent can't write `~/.local/state/herdr-claude-copy`.
 - Herdr doesn't review or sandbox plugins. This one reads your Claude Code transcripts and drives panes through the Herdr socket: read `bin/` before you install it.

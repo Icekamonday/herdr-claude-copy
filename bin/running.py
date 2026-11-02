@@ -43,6 +43,10 @@ WAITER = (sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)
 PROMPT_ENDS = ('$', '#', '%', '>', '❯')
 # the shells that read the heredoc of a run
 SHELLS = ('bash', 'zsh', 'sh', 'dash', 'ksh', 'mksh', 'ash')
+# the shells whose line editor holds a bracketed paste until the Enter, by
+# default. Another shell, such as dash, takes each newline of a paste as an
+# Enter, and runs the lines of the code as they arrive.
+PASTES = ('bash', 'zsh', 'fish')
 STEP = '# ---- step'
 END = 'END_OF_STEPS'
 
@@ -137,12 +141,15 @@ def empty_line(screen):
     return last.endswith(PROMPT_ENDS)
 
 
-def free_shell(panes, agent, standing):
-    """The shell that a run of the agent goes to, and the name of its program.
+def free_shell(panes, agent, standing, heredoc=True):
+    """The shell that the code of the agent goes to, and the name of its
+    program.
 
     It is a pane of the tab of the agent, with no agent, at its prompt: the
     one you stand in, else the first. Nothing runs before the Enter of the
-    user, so a shell that was not meant costs only a line to clear.
+    user, so a shell that was not meant costs only a line to clear. A run is
+    a heredoc, which a POSIX shell reads, and code typed as it is needs a
+    shell that holds a paste until that Enter.
     """
     tab = [pane for pane in panes
            if pane.get('tab_id') == agent.get('tab_id') and not pane.get('agent')]
@@ -154,7 +161,10 @@ def free_shell(panes, agent, standing):
     else:
         raise NoRun('open a shell in this tab, or wait for its command to end')
     name = shell_name(info)
-    if name not in SHELLS:
+    if not heredoc and name not in PASTES:
+        raise NoRun(f"open bash, zsh or fish in this tab: {name or 'this shell'} "
+                    f"would run each line of the code as it arrives")
+    if heredoc and name not in SHELLS:
         raise NoRun(f"open bash or zsh in this tab: a run is a heredoc, which "
                     f"{name or 'this shell'} may not read")
     if not empty_line(prompting.screen(shell)):

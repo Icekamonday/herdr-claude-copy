@@ -15,7 +15,7 @@ Herdr runs this script in a popup over the pane where the key was pressed.
 The popup gives the picker the keys, and that pane gives it the agent.
 
 The * key types the shell blocks into a free shell of the tab, as a run of
-steps: bin/running.py says how.
+steps: bin/running.py says how. The v key types the code there as it is.
 """
 
 import base64
@@ -81,7 +81,7 @@ ENDS = {'g': 0, 'KEY_HOME': 0, 'G': -1, 'KEY_END': -1}
 TURNS = {'n': 1, 'KEY_RIGHT': 1, 'p': -1, 'KEY_LEFT': -1}
 SCROLLS = {'\x04': 1, 'KEY_NPAGE': 1, '\x15': -1, 'KEY_PPAGE': -1}
 COPY = ('\n', '\r', 'KEY_ENTER')
-TO_RUN = {'!': 'claude', '$': 'shell', '*': 'run'}
+TO_RUN = {'!': 'claude', '$': 'shell', '*': 'run', 'v': 'paste'}
 QUIT = ('q', '\x1b')
 FOOTER = ('↑↓ move · enter copy · ! for Claude · $ for a shell · * for a run'
           ' · space mark · a all · ? help · q quit')
@@ -96,6 +96,7 @@ HELP = (
     ('!', 'copy its code to run in Claude, and put it in the prompt box'),
     ('$', 'copy its code to run in a shell: no ! at all'),
     ('*', 'put its shell code in a free shell of the tab, as a run of steps'),
+    ('v', 'put its code in a free shell of the tab, as $ copies it'),
     ('A', 'copy the whole answer as written, and quit'),
     ('p  n  ←  →', 'previous or next answer'),
     ('w', 'every message of the turn, or its last one alone'),
@@ -110,6 +111,7 @@ HELP = (
     ('', '! and * leave out a block that is not shell, and say so.'),
     ('*', 'Enter in that shell starts the run, a step per block.'),
     ('', 'Each step keeps its output in a directory of its own.'),
+    ('v', 'Enter in that shell runs the code as you would type it.'),
     ('a  !', 'Every shell command of the answer, in the prompt box of Claude.'),
     ('a  $', 'Every block of code of the answer, for a shell.'),
     ('', 'Space after a takes a block out of either.'),
@@ -462,7 +464,8 @@ def prepared(done, state, page):
     shell with no ! at all. * keeps the blocks apart, a list of them, since
     each block runs as a step of its own. Claude and a run hand their code to
     a shell, so ! and * leave out a block in another language, as they leave
-    out the prose.
+    out the prose. v types the code of $ into a shell, such a block included:
+    the user reads it there and runs it by hand.
     """
     if done == 'copy':
         return selection(state, page)
@@ -489,6 +492,8 @@ def prepared(done, state, page):
     text = BANG.sub('', '\n'.join(block['text'] for block in code)).strip('\n')
     if done == 'shell':
         return text, f'{what} for a shell'
+    if done == 'paste':
+        return text, what
     return '!' + text, f'{what} for Claude{out}'
 
 
@@ -839,25 +844,33 @@ def refuse(why):
     return 1
 
 
-def launch(agent, blocks, what):
-    """Type the run of the blocks into the free shell of the tab of the agent,
-    without the Enter that starts it, or say why not.
+def launch(agent, code, what, run=True):
+    """Type the code into the free shell of the tab of the agent, without the
+    Enter that runs it, or say why not. The code of a run is a list of
+    blocks, typed as a run of steps, and any other code is typed as it is.
 
     The shell is looked for once the picker has closed, since its command may
     have ended while the picker was open. The control characters come out
     before the check: with one at its end, a line that ends the run would pass.
     """
-    blocks = [CONTROLS.sub('', block) for block in blocks]
     try:
-        running.check(blocks)
-        shell, name = running.free_shell(api.panes(), agent, prompting.standing())
+        if run:
+            code = [CONTROLS.sub('', block) for block in code]
+            running.check(code)
+        shell, name = running.free_shell(api.panes(), agent, prompting.standing(),
+                                         heredoc=run)
     except running.NoRun as why:
         return refuse(str(why))
-    run = running.prepare(agent, shell, name)
-    api.call('pane', 'send_text', pane_id=shell['pane_id'],
-             text=PASTE.format(running.typed(run, blocks)))
+    if run:
+        directory = running.prepare(agent, shell, name)
+        text = running.typed(directory, code)
+        line = f'typed {what}, press Enter there to start the run in {directory}'
+    else:
+        text = CONTROLS.sub('', code)
+        line = (f"press Enter in pane {shell['pane_id']}"
+                f"{f' ({name})' if name else ''} to run {what}")
+    api.call('pane', 'send_text', pane_id=shell['pane_id'], text=PASTE.format(text))
     api.call('pane', 'focus', pane_id=shell['pane_id'])
-    line = f'typed {what}, press Enter there to start the run in {run}'
     print(line)
     api.call('notification', 'show', title='copy', body=line, sound='none')
     return 0
@@ -887,8 +900,8 @@ def main():
     if not picked:
         return 0
     done, text, what = picked
-    if done == 'run':
-        return launch(pane, text, what)
+    if done in ('run', 'paste'):
+        return launch(pane, text, what, run=done == 'run')
     clip(text)
     line = said(what, text)
     if done == 'claude':

@@ -604,6 +604,60 @@ class Picking(unittest.TestCase):
                          'open a shell in this tab, or wait for its command to end\n')
         self.assertNotIn('send_input', asked)
 
+    def test_v_takes_the_code_that_dollar_takes(self):
+        answer = 'Run:\n\n```sh\n!echo a\n```\n\n```python\nprint(1)\n```'
+        book = self.book(answer)
+        state, done = self.press(book, 'a', 'v')
+        self.assertEqual(done, 'paste')
+        self.assertEqual(self.copy.prepared('paste', state, book[0]),
+                         ('echo a\nprint(1)', '2 blocks'))
+
+    def paste(self, shell):
+        """v from the agent w3:p1, with that shell beside it, standing in it:
+        the status, what the picker said, what Herdr was asked, and what the
+        state directory holds after. The class Running says what each shell
+        of the world runs."""
+        agent = {'pane_id': 'w3:p1', 'tab_id': 'w3:t1', 'agent': 'claude'}
+        panes = [agent, {'pane_id': shell, 'tab_id': 'w3:t1'}]
+        room = tempfile.mkdtemp(prefix='herdr-paste-')
+        self.addCleanup(shutil.rmtree, room)
+        with unittest.mock.patch.object(self.copy.api, 'panes', return_value=panes), \
+                unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': room,
+                                                      'HERDR_PANE_ID': shell}), \
+                stub_log() as log, contextlib.redirect_stdout(io.StringIO()) as said:
+            status = self.copy.launch(agent, 'make\033[201~\nls', '2 blocks', run=False)
+            asked = pathlib.Path(log).read_text()
+        return status, said.getvalue(), asked, os.listdir(room)
+
+    def test_v_types_the_code_into_the_free_shell_with_no_enter_and_no_run(self):
+        status, said, asked, written = self.paste('w2:p2')
+        self.assertEqual((status, said), (0, 'press Enter in pane w2:p2 (bash) to run 2 blocks\n'))
+        self.assertIn('pane.send_text w2:p2 \033[200~make[201~\nls\033[201~', asked)
+        self.assertIn('pane.focus w2:p2', asked)
+        self.assertNotIn('send_input', asked)
+        self.assertEqual(written, [])
+
+    def test_v_refuses_a_busy_shell_and_a_line_being_typed(self):
+        """w1:p2 runs make, and w3:p5 holds a line after its prompt."""
+        for shell, why in (('w1:p2', 'open a shell in this tab, or wait for its command to end'),
+                           ('w3:p5', 'clear the line of the free shell first: it does not '
+                                     + 'end on a prompt')):
+            status, said, asked, _ = self.paste(shell)
+            self.assertEqual((status, said), (1, why + '\n'))
+            self.assertNotIn('send_text', asked)
+
+    def test_v_types_into_fish_which_holds_a_paste_until_the_enter(self):
+        status, said, asked, _ = self.paste('w3:p8')
+        self.assertEqual((status, said), (0, 'press Enter in pane w3:p8 (fish) to run 2 blocks\n'))
+        self.assertIn('pane.send_text w3:p8 \033[200~make[201~\nls\033[201~', asked)
+
+    def test_v_refuses_a_shell_that_runs_each_line_of_a_paste(self):
+        """dash reads the paste markers as text, and each newline as an Enter."""
+        status, said, asked, _ = self.paste('w3:p9')
+        self.assertEqual((status, said), (1, 'open bash, zsh or fish in this tab: dash would '
+                                             + 'run each line of the code as it arrives\n'))
+        self.assertNotIn('send_text', asked)
+
     def test_the_copy_goes_to_the_terminal_as_an_osc_52_sequence(self):
         """Herdr catches the sequence and writes the clipboard."""
         terminal = io.StringIO()
@@ -691,8 +745,8 @@ class Running(unittest.TestCase):
 
         In the world, bash in w3:p2 and zsh in w3:p7 are at their prompt.
         w3:p5 is at its prompt too, with a line that the user is typing, and
-        w3:p8 runs fish. w3:p3 runs cargo, w3:p4 a shell in a container, and
-        w3:p6 a panel.
+        w3:p8 runs fish, and w3:p9 dash. w3:p3 runs cargo, w3:p4 a shell in a
+        container, and w3:p6 a panel.
         """
         agent = {'pane_id': 'w3:p1', 'tab_id': 'w3:t1', 'agent': 'claude'}
         panes = [agent, *({'pane_id': shell, 'tab_id': tab} for shell in shells)]
