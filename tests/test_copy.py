@@ -132,8 +132,11 @@ class Picking(unittest.TestCase):
         loader.exec_module(self.copy)
 
     def book(self, *texts):
-        return [{'prompt': 'q', 'text': text, 'blocks': self.copy.blocks(text)}
-                for text in texts]
+        return self.turns(*([text] for text in texts))
+
+    def turns(self, *turns):
+        """A book of turns, each a list of the messages of Claude in it."""
+        return [self.copy.paged('q', messages) for messages in turns]
 
     def press(self, book, *keys):
         state, done = self.copy.opened(book), None
@@ -236,6 +239,88 @@ class Picking(unittest.TestCase):
             book = self.copy.pages(path)
         self.assertEqual([(page['prompt'], page['text']) for page in book],
                          [(self.copy.CUT, 'Done.')])
+        self.assertEqual(book[0]['every']['text'], 'Looking.\n\nDone.')
+
+    def test_w_shows_every_message_of_the_turn_in_its_order(self):
+        """What Claude writes before a tool, between two tools and at the end,
+        without the tool results and the thinking."""
+        def ran(message, tool):
+            return [claude(message, {'type': 'tool_use', 'id': tool, 'name': 'Bash',
+                                     'input': {}}),
+                    user([{'type': 'tool_result', 'tool_use_id': tool,
+                           'content': 'out'}])]
+        with tempfile.TemporaryDirectory() as room:
+            path = os.path.join(room, 'session.jsonl')
+            write_transcript(path, [
+                user('fix it'),
+                claude('m1', {'type': 'thinking', 'thinking': 'hmm'}),
+                claude('m1', text('Looking.')), *ran('m1', 't1'),
+                claude('m2', text('Between.')), *ran('m2', 't2'),
+                claude('m3', text('Found')),
+                claude('m3', text('it.')),
+            ])
+            book = self.copy.pages(path)
+        self.assertEqual(book[0]['text'], 'Found\n\nit.')
+        state, _ = self.press(book, 'w')
+        page = self.copy.shown(book, state)
+        self.assertEqual(page['text'], 'Looking.\n\nBetween.\n\nFound\n\nit.')
+        self.assertEqual([block['message'] for block in page['blocks']], [0, 1, 2, 2])
+
+    def test_a_rule_parts_two_messages_and_a_turn_of_one_has_none(self):
+        """The rule is drawn and never copied: the whole turn copies as written."""
+        book = self.turns(['Looking.', 'Found it.'], ['Only one.'])
+        rows = self.copy.layout(book[0]['every'], 20)
+        self.assertEqual([''.join(run for run, _ in row['runs']) for row in rows],
+                         ['Looking.', '', '╌' * 20, '', 'Found it.'])
+        self.assertEqual((rows[2]['block'], rows[2]['runs'][0][1]), (None, 'rule'))
+        self.assertEqual(self.copy.layout(book[0], 20), self.copy.layout(
+            self.book('Found it.')[0], 20))
+        state, _ = self.press(book, 'p', 'w', 'A')
+        self.assertEqual(self.copy.selection(state, self.copy.shown(book, state)),
+                         ('Looking.\n\nFound it.', 'the whole answer'))
+        single = book[1]['every']
+        self.assertEqual(single['text'], 'Only one.')
+        self.assertNotIn('rule', [style for row in self.copy.layout(single, 20)
+                                  for _, style in row['runs']])
+
+    def test_w_gathers_the_blocks_of_every_message_and_numbers_them_across(self):
+        book = self.turns(['First:\n\n```sh\none\n```', 'Then:\n\n```sh\ntwo\n```'])
+        state, _ = self.press(book, 'w', 'a')
+        page = self.copy.shown(book, state)
+        self.assertEqual(self.copy.prepared('claude', state, page),
+                         ('!one\ntwo', '2 blocks for Claude'))
+        steps, _ = self.copy.prepared('run', state, page)
+        self.assertIn('# ---- step 2\ntwo\n',
+                      self.copy.running.typed('/runs/d-1', steps))
+        heads = [''.join(run for run, _ in row['runs']).split()[0]
+                 for row in self.copy.layout(page, 30)
+                 if any(style == 'head-number' for _, style in row['runs'])]
+        self.assertEqual(heads, ['1', '2'])
+
+    def test_w_keeps_the_turn_and_the_block_and_clears_the_marks(self):
+        """The blocks of the last message end those of every message. A block
+        of an earlier message sends the cursor to the first block of code."""
+        book = self.turns(['a', 'b\n\n```sh\nls\n```'], ['c'])
+        self.assertFalse(self.copy.opened(book)['every'])
+        state, _ = self.press(book, 'p', ' ', 'w')
+        self.assertEqual((state['page'], state['every'], state['cursor'], state['marked']),
+                         (0, True, 2, frozenset()))
+        state, _ = self.press(book, 'p', 'w', 'k', 'w')
+        self.assertEqual((state['every'], state['cursor']), (False, 0))
+        state, _ = self.press(book, 'p', 'w', 'g', 'w')
+        self.assertEqual((state['every'], state['cursor']), (False, 1))
+        state, _ = self.press(book, 'p', 'w', 'n', 'p')
+        self.assertEqual((state['page'], state['every'], state['cursor']), (0, True, 2))
+
+    def test_the_top_line_names_the_mode_and_the_help_its_key(self):
+        book = self.turns(['a', 'b'], ['c'])
+        self.assertEqual(self.copy.heading(book, self.copy.opened(book)),
+                         ' answer 2/2 · ← →')
+        self.assertEqual(self.copy.heading(book, self.press(book, 'p')[0]),
+                         ' answer 1/2 · ← → · last of 2 messages, w for all')
+        self.assertEqual(self.copy.heading(book, self.press(book, 'p', 'w')[0]),
+                         ' answer 1/2 · ← → · every message (2), w for the last')
+        self.assertIn('w', [keys for keys, _ in self.copy.HELP])
 
     def test_tab_goes_from_code_to_code_and_stops_at_the_last(self):
         book = self.book('a\n\n```sh\none\n```\n\nb\n\n```sh\ntwo\n```\n\nc')
