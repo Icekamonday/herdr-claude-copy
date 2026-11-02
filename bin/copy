@@ -70,6 +70,10 @@ OUTPUTS = ('<bash-stdout>', '<bash-stderr>', '<local-command-stdout>',
 TAIL = 4 << 20      # a transcript can pass 40 MB, and the picker shows its last answers
 CUT = '(the prompt of this turn is too far back in the transcript)'
 GUTTER = 7          # the row number, the bar of the cursor, and a space each
+# the rule between two messages of a turn. Claude almost never writes a line
+# of it alone, so it does not read as a line of a message. It is drawn and
+# never copied.
+RULE = '╌'
 
 MOVES = {'j': 1, 'KEY_DOWN': 1, 'k': -1, 'KEY_UP': -1}
 CODE = {'\t': 1, 'KEY_BTAB': -1}
@@ -93,6 +97,7 @@ HELP = (
     ('*', 'put its shell code in a free shell of the tab, as a run of steps'),
     ('A', 'copy the whole answer as written, and quit'),
     ('p  n  ←  →', 'previous or next answer'),
+    ('w', 'every message of the turn, or its last one alone'),
     ('C-d  C-u', 'scroll half a page'),
     ('?', 'this help'),
     ('q  Esc', 'quit with no copy'),
@@ -125,7 +130,7 @@ STYLES = {
     'inline-cursor': (151, 237, 0), 'heading-cursor': (183, 237, BOLD),
     'quote-cursor': (245, 237, ITALIC),
     'title': (-1, -1, BOLD), 'help': (242, -1, 0), 'help-key': (216, -1, BOLD),
-    'warn': (211, -1, BOLD),
+    'warn': (211, -1, BOLD), 'rule': (242, -1, 0),
     'prompt': (189, 238, 0), 'prompt-more': (245, 238, ITALIC),
     'gutter': (242, -1, 0), 'gutter-cursor': (216, -1, BOLD),
     'gutter-mark': (183, -1, BOLD), 'gutter-both': (211, -1, BOLD),
@@ -184,17 +189,19 @@ def _output(content):
 def answers(path):
     """The answers of a session, oldest first, each with the prompt it follows.
 
-    An answer is the last message of Claude in a turn, as Claude's own /copy
-    takes it. A turn that runs tools holds other messages before it, a few
-    words between two tools. The records of one message share its id.
+    An answer holds the messages of Claude in a turn, in their order. The
+    picker shows the last one, as Claude's own /copy takes it. A turn that
+    runs tools holds other messages before it, a few words between two
+    tools. The records of one message share its id.
 
     Each user record opens a turn, unless it is a tool result, the output of
     a command, or a record that Claude Code adds itself. A local command also
     opens a turn, but Claude writes nothing in it.
 
     Only the tail of the transcript is read, and its start can cut a turn.
-    The answer of that turn stays, under CUT, since one turn can write more
-    than the tail holds. It can lose its beginning.
+    The messages of that turn that the tail holds stay, under CUT, since one
+    turn can write more than the tail holds. The first of them can lose its
+    beginning.
     """
     try:
         with open(path, 'rb') as fp:
@@ -206,7 +213,7 @@ def answers(path):
         return []
     found, turn = [], None
     if size > TAIL:
-        lines, turn = lines[1:], {'prompt': CUT, 'id': None, 'texts': []}
+        lines, turn = lines[1:], {'prompt': CUT, 'id': None, 'messages': []}
         found.append(turn)
     for raw in lines:
         try:
@@ -220,7 +227,7 @@ def answers(path):
         if record.get('type') == 'user':
             if not record.get('isMeta') and not record.get('isCompactSummary') \
                     and not _tool_result(content) and not _output(content):
-                turn = {'prompt': _prompt(content), 'id': None, 'texts': []}
+                turn = {'prompt': _prompt(content), 'id': None, 'messages': []}
                 found.append(turn)
         elif record.get('type') == 'assistant' and turn is not None \
                 and isinstance(content, list):
@@ -229,11 +236,13 @@ def answers(path):
                      and block.get('text')]
             if not texts:
                 continue
-            if turn['id'] != message.get('id'):
-                turn['id'], turn['texts'] = message.get('id'), []
-            turn['texts'].extend(texts)
-    return [{'prompt': answer['prompt'], 'text': '\n\n'.join(answer['texts'])}
-            for answer in found if answer['texts']]
+            if not turn['messages'] or turn['id'] != message.get('id'):
+                turn['id'] = message.get('id')
+                turn['messages'].append([])
+            turn['messages'][-1].extend(texts)
+    return [{'prompt': answer['prompt'],
+             'messages': ['\n\n'.join(texts) for texts in answer['messages']]}
+            for answer in found if answer['messages']]
 
 
 def _dedent(line, width):
@@ -301,21 +310,60 @@ def blocks(text):
     return found
 
 
+def paged(prompt, messages):
+    """The page of a turn: its last message and its blocks.
+
+    Under 'every', the same turn shows all its messages. Both are built at
+    once, so the w key reads nothing. Each message is cut into blocks on its
+    own: a fence left open in one cannot take in the next. Every block
+    carries the number of its message, and layout() draws a rule where that
+    number changes.
+    """
+    every = [dict(block, message=n) for n, text in enumerate(messages)
+             for block in blocks(text)]
+    last = len(messages) - 1
+    page = {'prompt': prompt, 'text': messages[-1], 'messages': len(messages),
+            'blocks': [block for block in every if block['message'] == last]}
+    page['every'] = dict(page, text='\n\n'.join(messages), blocks=every)
+    return page
+
+
 def pages(path):
-    """What the picker pages through: each answer and its blocks."""
-    return [dict(answer, blocks=blocks(answer['text'])) for answer in answers(path)]
+    """What the picker pages through: the page of each answer."""
+    return [paged(answer['prompt'], answer['messages']) for answer in answers(path)]
 
 
-def start(book, page):
+def shown(book, state):
+    """The page on screen: the last message of its turn, or every message."""
+    page = book[state['page']]
+    return page['every'] if state['every'] else page
+
+
+def start(book, page, every=False):
     """An answer as it opens: the cursor on its first block of code, if any."""
-    found = book[page]['blocks']
-    cursor = next((i for i, block in enumerate(found) if block['kind'] == 'code'), 0)
-    return {'page': page, 'cursor': cursor, 'marked': frozenset(),
-            'top': 0, 'follow': True, 'help': False, 'said': ''}
+    state = {'page': page, 'every': every, 'cursor': 0, 'marked': frozenset(),
+             'top': 0, 'follow': True, 'help': False, 'said': ''}
+    found = shown(book, state)['blocks']
+    return dict(state, cursor=next(
+        (i for i, block in enumerate(found) if block['kind'] == 'code'), 0))
 
 
 def opened(book):
     return start(book, len(book) - 1)
+
+
+def toggled(state, book):
+    """The same turn in the other mode, with no mark.
+
+    The blocks of the last message end the blocks of every message, so the
+    cursor keeps its block when the other mode shows it. A block of an
+    earlier message has no place among those of the last one.
+    """
+    page = book[state['page']]
+    shift = len(page['every']['blocks']) - len(page['blocks'])
+    cursor = state['cursor'] + (-shift if state['every'] else shift)
+    fresh = start(book, state['page'], not state['every'])
+    return fresh if cursor < 0 else dict(fresh, cursor=cursor)
 
 
 def step(state, key, book, height=20):
@@ -328,7 +376,7 @@ def step(state, key, book, height=20):
         return dict(state, help=False), None
     if key == '?':
         return dict(state, help=True), None
-    found = book[state['page']]['blocks']
+    found = shown(book, state)['blocks']
     if key in MOVES:
         cursor = max(0, min(len(found) - 1, state['cursor'] + MOVES[key]))
         return dict(state, cursor=cursor, follow=True), None
@@ -342,18 +390,21 @@ def step(state, key, book, height=20):
         return dict(state, cursor=ENDS[key] % len(found), follow=True), None
     if key in TURNS:
         page = max(0, min(len(book) - 1, state['page'] + TURNS[key]))
-        return (state if page == state['page'] else start(book, page)), None
+        return (state if page == state['page']
+                else start(book, page, state['every'])), None
+    if key == 'w':
+        return toggled(state, book), None
     if key in SCROLLS:
         top = max(0, state['top'] + SCROLLS[key] * max(1, height // 2))
         return dict(state, top=top, follow=False), None
     if key == ' ':
         return dict(state, marked=state['marked'] ^ {state['cursor']}), None
-    every = frozenset(range(len(found)))
+    whole = frozenset(range(len(found)))
     if key == 'a':
-        return dict(state, marked=frozenset() if state['marked'] == every
-                    else every), None
+        return dict(state, marked=frozenset() if state['marked'] == whole
+                    else whole), None
     if key == 'A':
-        return dict(state, marked=every), 'copy'
+        return dict(state, marked=whole), 'copy'
     if key in COPY:
         return state, 'copy'
     if key in TO_RUN:
@@ -561,11 +612,19 @@ def panel(block, number, width):
 
 
 def layout(page, width):
-    """The rows of an answer at that width, each tagged with its block."""
+    """The rows of an answer at that width, each tagged with its block.
+
+    A rule between two messages belongs to no block, so the cursor and the
+    marks pass over it.
+    """
     width, rows, number = max(20, width), [], 0
-    for index, block in enumerate(page['blocks']):
+    found = page['blocks']
+    for index, block in enumerate(found):
         if index:
             rows.append({'block': None, 'runs': [], 'code': False})
+            if block['message'] != found[index - 1]['message']:
+                rows.append({'block': None, 'runs': [(RULE * width, 'rule')], 'code': False})
+                rows.append({'block': None, 'runs': [], 'code': False})
         if block['kind'] == 'code':
             number += 1
             drawn = panel(block, number, width)
@@ -650,11 +709,23 @@ def put(screen, row, column, text, attr=0):
             pass
 
 
+def heading(book, state):
+    """The top line: which answer is on screen, and which of its messages.
+    It names the mode, since w changes the blocks of the same answer."""
+    count = book[state['page']]['messages']
+    line = f" answer {state['page'] + 1}/{len(book)} · ← →"
+    if state['every']:
+        return line + f' · every message ({count}), w for the last'
+    if count > 1:
+        return line + f' · last of {count} messages, w for all'
+    return line
+
+
 def draw(screen, state, book, prompt, rows, look):
     """The answer under its prompt, or the help when it is asked for."""
     screen.erase()
     height, width = screen.getmaxyx()
-    put(screen, 0, 0, f" answer {state['page'] + 1}/{len(book)} · ← →", look['title'])
+    put(screen, 0, 0, heading(book, state), look['title'])
     put(screen, 0, max(0, width - 8), '? help', look['help'])
     if state['help']:
         for y, (keys, what) in enumerate(HELP, 2):
@@ -683,7 +754,7 @@ def draw(screen, state, book, prompt, rows, look):
             column += len(text)
         if mine and not row['code']:
             put(screen, y, column, ' ' * (width - column), look['text-cursor'])
-    found = book[state['page']]['blocks']
+    found = shown(book, state)['blocks']
     status = 'whole answer · ' if len(state['marked']) == len(found) > 1 else \
         f"{len(state['marked'])} marked · " if state['marked'] else ''
     if state['said']:
@@ -704,8 +775,8 @@ def pick(book):
         look, state, drawn = palette(), opened(book), {}
         while True:
             height, width = screen.getmaxyx()
-            page = book[state['page']]
-            shape = (state['page'], width, height)
+            page = shown(book, state)
+            shape = (state['page'], state['every'], width, height)
             if shape not in drawn:
                 drawn[shape] = (asked(page['prompt'], width, max(2, (height - 4) // 4)),
                                 layout(page, width - GUTTER - 1))
@@ -721,7 +792,7 @@ def pick(book):
             state, done = step(dict(state, said=''), key, book, body)
             if done in ('copy', *TO_RUN.values()):
                 try:
-                    return (done, *prepared(done, state, book[state['page']]))
+                    return (done, *prepared(done, state, shown(book, state)))
                 except Refused as why:
                     state = dict(state, said=str(why))
             if done == 'quit':

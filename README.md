@@ -30,7 +30,7 @@ Then reload the configuration with `herdr server reload-config`.
 
 ## Use
 
-Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last answer, with the cursor on its first code block. As with `/copy`, an answer is the last message that Claude writes in a turn, without the words that it writes between two tools.
+Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last answer, with the cursor on its first code block. As with `/copy`, an answer is the last message that Claude writes in a turn, without the words that it writes between two tools. Press `w` to see every message of the turn, with a dashed rule between two messages, and `w` again to see the last one alone. The rule is never copied: `A` copies the messages as Claude wrote them.
 
 | Key | Action |
 |---|---|
@@ -43,6 +43,7 @@ Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last an
 | `*` | put their shell code in a free shell of the tab, as a run of one step per block |
 | `A` | copy the whole answer as written, and quit |
 | `p` `n` or `←` `→` | previous or next answer |
+| `w` | every message of the turn, or its last one alone |
 | `Ctrl+D` `Ctrl+U` | scroll half a page |
 | `?`, `q` `Esc` | every key, quit |
 
