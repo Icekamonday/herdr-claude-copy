@@ -92,6 +92,35 @@ The waiter types only into a box that can take a line. Claude must not be workin
 
 If two runs of one Claude end together, the second wake waits for the turn that the first one starts. For that, each waiter takes a lock on the pane of Claude: an empty file `wake-<pane id>.lock` in `~/.local/state/herdr-claude-copy/`, next to `runs/`. These files are harmless, and you can delete them when no run is waiting.
 
+## Rebind the keys
+
+To give an action another key, write one `action = key` line per binding in `~/.config/herdr-claude-copy/keys`, or in `$XDG_CONFIG_HOME/herdr-claude-copy/keys` if you set that variable:
+
+```
+# the run on ù, the help on h
+run = ù
+help = h
+```
+
+A key is one printable character, such as `ù` in a UTF-8 terminal, and its case counts. It replaces the letter of the action: after `run = ù`, `*` does nothing. The named keys keep their action: the arrows, `Tab`, `Shift+Tab`, `Home`, `End`, the Page keys, `Enter`, `Esc`, `Space`, `Ctrl+D` and `Ctrl+U`. An action with no letter can take one beside its named keys. A line that starts with `#` is a comment, and `run = #` binds `#`.
+
+| Actions | Letters by default |
+|---|---|
+| `down` `up` | `j` `k` |
+| `code-next` `code-previous` | none, `Tab` `Shift+Tab` only |
+| `first` `last` | `g` `G` |
+| `previous` `next` | `p` `n` |
+| `mark` `all` `code` | none, `Space` only; `a`; `c` |
+| `copy` `answer` | none, `Enter` only; `A` |
+| `claude` `shell` `run` `paste` | `!` `$` `*` `v` |
+| `every` | `w` |
+| `page-down` `page-up` | none, `Ctrl+D` `Ctrl+U` only |
+| `help` `quit` | `?` `q` |
+
+The picker reads the file when it opens, and the help and the footer show the keys as you bound them. To swap two keys, bind both: `down = k` and `up = j`.
+
+If a line is wrong, the picker refuses the whole file and uses the default keys. A line is wrong if it names no action of the table, binds an action twice, or gives a key that isn't one printable character. A key that another action holds is wrong too. The picker names the line and the fault at the bottom of the screen until the first key, and at the top of the help.
+
 ## A session in a container
 
 The picker reads the transcripts under `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`. A Claude Code that runs in a container writes them in another directory. Add that directory to `~/.config/herdr-claude-copy/sources`, one per line:

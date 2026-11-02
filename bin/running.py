@@ -61,7 +61,7 @@ step_shell=$(command -v {name}) || {{
     exit 1
 }}
 if ! (set -C; : > "$run/job") 2>/dev/null; then
-    echo "this run has already started: press * in the picker for a new one" >&2
+    printf 'this run has already started: press %s in the picker for a new one\\n' {again} >&2
     exit 1
 fi
 mark() {{ printf '%s\\n' "$*" >> "$run/job"; printf '%s\\n' "$*"; }}
@@ -172,12 +172,13 @@ def free_shell(panes, agent, standing, heredoc=True):
     return shell, name
 
 
-def check(blocks):
-    """Refuse a block with a line that would cut the run where it stands."""
+def check(blocks, instead='$'):
+    """Refuse a block with a line that would cut the run where it stands, and
+    name the key that copies it instead."""
     for block in blocks:
         for row in block.split('\n'):
             if row == END or row.startswith(STEP):
-                raise NoRun(f'copy this block with $ instead: its line "{row}" '
+                raise NoRun(f'copy this block with {instead} instead: its line "{row}" '
                             f'would cut the run')
 
 
@@ -196,9 +197,10 @@ def _fresh(root, day):
         return path
 
 
-def prepare(agent, shell, name, day=None):
+def prepare(agent, shell, name, day=None, again='*'):
     """Write the script of a run in the shell of that name, and return the
-    directory of the run."""
+    directory of the run. A run typed twice names the key of a new run,
+    given as again."""
     root = home()
     os.makedirs(root, mode=0o700, exist_ok=True)
     # the waiters keep their locks beside the runs, in a directory that must be
@@ -208,17 +210,21 @@ def prepare(agent, shell, name, day=None):
     with open(os.path.join(run, 'run'), 'x') as fp:
         fp.write(RUNNER.format(run=shlex.quote(run), agent=shlex.quote(agent['pane_id']),
                                shell=shlex.quote(shell['pane_id']), name=shlex.quote(name),
-                               step=STEP, waiter=shlex.join(WAITER),
+                               step=STEP, waiter=shlex.join(WAITER), again=shlex.quote(again),
                                ctrl_c=waking.CTRL_C, quiet=waking.QUIET))
     return run
+
+
+def tilde(path, quote=str):
+    """The path from ~ when it lies in the home directory, the rest of it
+    through quote."""
+    home = os.path.expanduser('~') + os.sep
+    return '~/' + quote(path[len(home):]) if path.startswith(home) else quote(path)
 
 
 def typed(run, blocks):
     """The text typed into the shell: the script of the run, with the blocks
     on its input. It ends with no newline, so the Enter is the user's."""
-    path = os.path.join(run, 'run')
-    mine = os.path.expanduser('~') + os.sep
-    path = '~/' + shlex.quote(path[len(mine):]) if path.startswith(mine) \
-        else shlex.quote(path)
+    path = tilde(os.path.join(run, 'run'), shlex.quote)
     steps = ''.join(f'{STEP} {n}\n{block}\n' for n, block in enumerate(blocks, 1))
     return f"sh {path} <<'{END}'\n{steps}{END}"

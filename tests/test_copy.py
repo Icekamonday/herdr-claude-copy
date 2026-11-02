@@ -6,6 +6,7 @@ A stub server, a fixed world of panes and the transcripts that each test
 writes are enough to run it whole.
 """
 
+import collections
 import contextlib
 import importlib
 import importlib.machinery
@@ -138,11 +139,116 @@ class Picking(unittest.TestCase):
         """A book of turns, each a list of the messages of Claude in it."""
         return [self.copy.paged('q', messages) for messages in turns]
 
-    def press(self, book, *keys):
+    def press(self, book, *keys, bound=None):
         state, done = self.copy.opened(book), None
         for key in keys:
-            state, done = self.copy.step(state, key, book)
+            state, done = self.copy.step(state, key, book, keys=bound or self.copy.LETTERS)
         return state, done
+
+    def keys(self, text):
+        """What the picker makes of a keys file that holds that text: the
+        letters, the fault, and the path of the file."""
+        room = tempfile.mkdtemp(prefix='herdr-keys-')
+        self.addCleanup(shutil.rmtree, room)
+        path = os.path.join(room, 'keys')
+        pathlib.Path(path).write_bytes(text if isinstance(text, bytes) else text.encode())
+        return (*self.copy.bindings(path), path)
+
+    def test_the_keys_file_lies_beside_the_sources_and_may_be_absent(self):
+        self.assertEqual(self.copy.keys_file(), os.path.join(
+            os.environ['XDG_CONFIG_HOME'], 'herdr-claude-copy', 'keys'))
+        self.assertEqual(self.copy.bindings(), (self.copy.LETTERS, ''))
+
+    def test_a_letter_of_the_keys_file_replaces_the_default_letter(self):
+        """A # after the = is a key, and the named keys keep their action."""
+        keys, fault, _ = self.keys('# mine\n\nrun = ù\nclaude = #\nhelp = h\nquit = x\n')
+        self.assertEqual(fault, '')
+        self.assertEqual((keys['run'], keys['claude'], keys['help'], keys['quit']),
+                         ('ù', '#', 'h', 'x'))
+        book = self.book('```sh\nls\n```')
+        self.assertEqual([self.press(book, key, bound=keys)[1]
+                          for key in ('ù', '*', '#', 'x', 'q', '\x1b')],
+                         ['run', None, 'claude', 'quit', None, 'quit'])
+        self.assertTrue(self.press(book, 'h', bound=keys)[0]['help'])
+        self.assertFalse(self.press(book, '?', bound=keys)[0]['help'])
+
+    def test_two_actions_can_swap_their_letters(self):
+        keys, fault, _ = self.keys('down = k\nup = j\n')
+        self.assertEqual(fault, '')
+        book = self.book('a\n\nb\n\nc')
+        self.assertEqual(self.press(book, 'k', bound=keys)[0]['cursor'], 1)
+        self.assertEqual(self.press(book, 'k', 'j', bound=keys)[0]['cursor'], 0)
+
+    def test_a_keys_file_with_a_fault_is_refused_whole_at_its_first(self):
+        for text, fault in (
+                ('run ù', 'line 1: write it as action = key'),
+                ('# mine\nrunning = ù', "line 2: no action is named 'running': "
+                                        + 'the README lists them'),
+                ('run = ù\nrun = x', 'line 2: run is bound already, on line 1'),
+                ('run = ab', "line 1: give run one printable character, not 'ab'"),
+                ('run =', "line 1: give run one printable character, not ''"),
+                ('run = \x1b', "line 1: give run one printable character, not '\\x1b'"),
+                ('copy = y\nrun = j', 'line 2: j is the key of down too: '
+                                      + 'give one of them another key'),
+                ('run = x\npaste = x', 'line 2: x is the key of run too: '
+                                       + 'give one of them another key')):
+            with self.subTest(text):
+                keys, said, path = self.keys(text)
+                self.assertEqual(keys, self.copy.LETTERS)
+                self.assertEqual(said, f'{path}, {fault}. The default keys hold.')
+        keys, said, path = self.keys(b'run = \xf9\n')
+        self.assertEqual((keys, said), (self.copy.LETTERS,
+                                        f'write {path} in UTF-8. The default keys hold.'))
+
+    def test_the_help_the_footer_and_the_top_line_show_the_keys_as_bound(self):
+        defaults = self.copy.helped(self.copy.LETTERS)
+        self.assertEqual(defaults[0], ('j  k  ↓  ↑', 'next or previous block'))
+        self.assertIn(('q  Esc', 'quit with no copy'), defaults)
+        keys, _, _ = self.keys('run = ù\nevery = W\ncopy = y\n')
+        rows = self.copy.helped(keys)
+        self.assertIn(('ù', 'put its shell code in a free shell of the tab, as a run of steps'),
+                      rows)
+        self.assertIn(('y  Enter', 'copy the selection as written, else the block at the cursor'),
+                      rows)
+        self.assertIn(('', '! and ù leave out a block that is not shell, and say so.'), rows)
+        self.assertIn('· ù for a run ·', self.copy.FOOTER.format_map(self.copy.names(keys)))
+        book = self.turns(['a', 'b'])
+        self.assertEqual(self.copy.heading(book, self.copy.opened(book), keys),
+                         ' answer 1/1 · ← → · last of 2 messages, W for all')
+
+    def help_screen(self, keys, trouble=''):
+        """The rows of text of the help, drawn on a screen of 40 by 100."""
+        class Screen:
+            def __init__(self):
+                self.rows = {}
+
+            def getmaxyx(self):
+                return 40, 100
+
+            def erase(self):
+                self.rows.clear()
+
+            def refresh(self):
+                pass
+
+            def addnstr(self, y, x, text, room, attr):
+                self.rows[y] = self.rows.get(y, '').ljust(x) + text[:room]
+
+        book = self.book('a')
+        screen = Screen()
+        self.copy.draw(screen, dict(self.copy.opened(book), help=True), book, [], [],
+                       collections.defaultdict(int), keys, trouble)
+        return screen.rows
+
+    def test_the_help_keeps_the_fault_of_the_keys_file_in_sight(self):
+        rows = self.help_screen(self.copy.LETTERS, 'keys, line 2: fault')
+        self.assertEqual(rows[2].strip(), 'keys, line 2: fault')
+        self.assertEqual(rows[4], '   j  k  ↓  ↑' + ' ' * 4 + 'next or previous block')
+
+    def test_a_label_wider_than_its_column_pushes_the_text_of_the_help(self):
+        keys, _, _ = self.keys('code-next = x\ncode-previous = y\n')
+        self.assertIn('   x  y  Tab  S-Tab  next or previous block of code',
+                      self.help_screen(keys).values())
 
     def test_an_answer_is_cut_into_its_blocks_in_order(self):
         """A list keeps the blank lines between its items, and stays one block."""
@@ -320,7 +426,7 @@ class Picking(unittest.TestCase):
                          ' answer 1/2 · ← → · last of 2 messages, w for all')
         self.assertEqual(self.copy.heading(book, self.press(book, 'p', 'w')[0]),
                          ' answer 1/2 · ← → · every message (2), w for the last')
-        self.assertIn('w', [keys for keys, _ in self.copy.HELP])
+        self.assertIn('w', [keys for keys, _ in self.copy.helped(self.copy.LETTERS)])
 
     def test_tab_goes_from_code_to_code_and_stops_at_the_last(self):
         book = self.book('a\n\n```sh\none\n```\n\nb\n\n```sh\ntwo\n```\n\nc')
@@ -796,6 +902,8 @@ class Running(unittest.TestCase):
                                                              r'^copy this block with \$'):
                 self.running.check([block])
         self.running.check(['echo END_OF_STEPS', '  # ---- step'])
+        with self.assertRaisesRegex(self.running.NoRun, '^copy this block with ù instead'):
+            self.running.check(['END_OF_STEPS'], 'ù')
 
     def test_the_shell_gets_the_script_and_the_blocks_with_no_enter(self):
         with unittest.mock.patch.dict(os.environ, {'HOME': '/home/u'}):
@@ -876,6 +984,17 @@ class Running(unittest.TestCase):
         self.assertEqual(again.returncode, 1)
         self.assertIn('press * in the picker for a new one', again.stderr)
         self.assertEqual(pathlib.Path(run, 'job').read_text().splitlines(), job)
+
+    def test_a_run_typed_again_names_the_key_bound_to_run(self):
+        """The key goes into the script of the run, where a quote or a backtick
+        stays text."""
+        for key in ('`', "'", '"'):
+            run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh',
+                                       again=key)
+            pathlib.Path(run, 'job').touch()
+            again = self.enter(self.running.typed(run, ['echo once']))
+            self.assertEqual(again.returncode, 1)
+            self.assertIn(f'press {key} in the picker for a new one', again.stderr)
 
     @unittest.skipUnless(shutil.which('script'), 'no script')
     def test_the_run_takes_the_blocks_as_the_user_left_them(self):
