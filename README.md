@@ -36,7 +36,7 @@ Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last an
 |---|---|
 | `j` `k` or `↓` `↑`, `Tab` `Shift+Tab` | next or previous block, or block of code |
 | `g` `G` | first or last block |
-| `Space`, `a` | mark the block at the cursor, or every block |
+| `Space`, `a`, `c` | mark the block at the cursor, every block, or every block of code |
 | `Enter` | copy the marked blocks, else the block at the cursor |
 | `!` | copy their shell code behind one `!`, and put it in Claude's prompt box |
 | `$` | copy their code for a shell, with no `!` |

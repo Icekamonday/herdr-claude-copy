@@ -352,6 +352,29 @@ class Picking(unittest.TestCase):
                          ('Run:\n\nThen check.', '2 blocks'))
         self.assertEqual(self.press(book, 'a', 'a')[0]['marked'], frozenset())
 
+    def test_c_marks_every_block_of_code_until_all_are_marked(self):
+        """The marks of prose stay as they are, whatever c does."""
+        book = self.book('Run:\n\n```sh\none\n```\n\nThen:\n\n```sh\ntwo\n```')
+        self.assertEqual(self.press(book, 'c')[0]['marked'], {1, 3})
+        self.assertEqual(self.press(book, ' ', 'c')[0]['marked'], {1, 3})
+        self.assertEqual(self.press(book, 'c', 'c')[0]['marked'], set())
+        self.assertEqual(self.press(book, 'k', ' ', 'c')[0]['marked'], {0, 1, 3})
+        self.assertEqual(self.press(book, 'k', ' ', 'c', 'c')[0]['marked'], {0})
+
+    def test_a_then_c_leaves_the_prose_and_space_drops_one_block(self):
+        book = self.book('Run:\n\n```sh\none\n```\n\nThen:\n\n```sh\ntwo\n```')
+        state, _ = self.press(book, 'a', 'c')
+        self.assertEqual(self.copy.selection(state, book[0]), ('Run:\n\nThen:', '2 blocks'))
+        state, _ = self.press(book, 'c', ' ')
+        self.assertEqual(self.copy.selection(state, book[0]), ('two', 'the sh block'))
+
+    def test_c_in_the_w_mode_marks_the_code_of_every_message(self):
+        book = self.turns(['```sh\none\n```\n\nThen:', '```sh\ntwo\n```'])
+        state, _ = self.press(book, 'w', 'c')
+        self.assertEqual(state['marked'], {0, 2})
+        self.assertEqual(self.copy.prepared('shell', state, book[0]['every']),
+                         ('one\ntwo', '2 blocks for a shell'))
+
     def test_shift_a_copies_the_whole_answer_at_once(self):
         book = self.book('Run:\n\n```sh\none\n```')
         state, done = self.press(book, 'A')

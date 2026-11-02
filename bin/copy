@@ -91,6 +91,7 @@ HELP = (
     ('g  G', 'first or last block'),
     ('Space', 'mark the block at the cursor, for a copy of several'),
     ('a', 'mark every block, or unmark them all'),
+    ('c', 'mark every block of code, or unmark them all'),
     ('Enter', 'copy the selection as written, else the block at the cursor'),
     ('!', 'copy its code to run in Claude, and put it in the prompt box'),
     ('$', 'copy its code to run in a shell: no ! at all'),
@@ -112,6 +113,7 @@ HELP = (
     ('a  !', 'Every shell command of the answer, in the prompt box of Claude.'),
     ('a  $', 'Every block of code of the answer, for a shell.'),
     ('', 'Space after a takes a block out of either.'),
+    ('a  c', 'The prose of the answer alone.'),
     ('', ''),
     ('', 'Any key closes this help.'),
 )
@@ -403,6 +405,10 @@ def step(state, key, book, height=20):
     if key == 'a':
         return dict(state, marked=frozenset() if state['marked'] == whole
                     else whole), None
+    if key == 'c':
+        code = frozenset(i for i, block in enumerate(found) if block['kind'] == 'code')
+        return dict(state, marked=state['marked'] - code if code <= state['marked']
+                    else state['marked'] | code), None
     if key == 'A':
         return dict(state, marked=whole), 'copy'
     if key in COPY:
