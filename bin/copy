@@ -15,7 +15,7 @@ Herdr runs this script in a popup over the pane where the key was pressed.
 The popup gives the picker the keys, and that pane gives it the agent.
 
 The * key types the shell blocks into a free shell of the tab, as a run of
-steps: bin/running.py says how.
+steps: bin/running.py says how. The v key types the code there as it is.
 """
 
 import base64
@@ -75,45 +75,69 @@ GUTTER = 7          # the row number, the bar of the cursor, and a space each
 # never copied.
 RULE = '╌'
 
-MOVES = {'j': 1, 'KEY_DOWN': 1, 'k': -1, 'KEY_UP': -1}
-CODE = {'\t': 1, 'KEY_BTAB': -1}
-ENDS = {'g': 0, 'KEY_HOME': 0, 'G': -1, 'KEY_END': -1}
-TURNS = {'n': 1, 'KEY_RIGHT': 1, 'p': -1, 'KEY_LEFT': -1}
-SCROLLS = {'\x04': 1, 'KEY_NPAGE': 1, '\x15': -1, 'KEY_PPAGE': -1}
-COPY = ('\n', '\r', 'KEY_ENTER')
-TO_RUN = {'!': 'claude', '$': 'shell', '*': 'run'}
-QUIT = ('q', '\x1b')
-FOOTER = ('↑↓ move · enter copy · ! for Claude · $ for a shell · * for a run'
-          ' · space mark · a all · ? help · q quit')
+# each action of the picker, and its letter by default. The keys file gives an
+# action another letter, and the named keys keep their action whatever it says.
+LETTERS = {
+    'down': 'j', 'up': 'k', 'code-next': '', 'code-previous': '',
+    'first': 'g', 'last': 'G', 'previous': 'p', 'next': 'n', 'every': 'w',
+    'page-down': '', 'page-up': '', 'mark': '', 'all': 'a', 'code': 'c',
+    'answer': 'A', 'copy': '', 'claude': '!', 'shell': '$', 'run': '*',
+    'paste': 'v', 'help': '?', 'quit': 'q',
+}
+# the file holds one printable character after its =, so a Space or a Ctrl key
+# is named here: the file could not give it back to its action
+NAMED = {
+    'KEY_DOWN': 'down', 'KEY_UP': 'up', '\t': 'code-next', 'KEY_BTAB': 'code-previous',
+    'KEY_HOME': 'first', 'KEY_END': 'last', 'KEY_LEFT': 'previous', 'KEY_RIGHT': 'next',
+    '\x04': 'page-down', 'KEY_NPAGE': 'page-down', '\x15': 'page-up', 'KEY_PPAGE': 'page-up',
+    ' ': 'mark', '\n': 'copy', '\r': 'copy', 'KEY_ENTER': 'copy', '\x1b': 'quit',
+}
+SHOWN = {'down': '↓', 'up': '↑', 'code-next': 'Tab', 'code-previous': 'S-Tab',
+         'previous': '←', 'next': '→', 'page-down': 'C-d', 'page-up': 'C-u',
+         'mark': 'Space', 'copy': 'Enter', 'quit': 'Esc'}
+MOVES = {'down': 1, 'up': -1}
+CODE = {'code-next': 1, 'code-previous': -1}
+ENDS = {'first': 0, 'last': -1}
+TURNS = {'next': 1, 'previous': -1}
+SCROLLS = {'page-down': 1, 'page-up': -1}
+TO_RUN = ('claude', 'shell', 'run', 'paste')
+FOOTER = ('↑↓ move · enter copy · {claude} for Claude · {shell} for a shell'
+          ' · {run} for a run · space mark · {all} all · {help} help · {quit} quit')
+# the keys of each row are the actions whose keys it shows, and a text names a
+# key by its action in braces
 HELP = (
-    ('j  k  ↓  ↑', 'next or previous block'),
-    ('Tab  S-Tab', 'next or previous block of code'),
-    ('g  G', 'first or last block'),
-    ('Space', 'mark the block at the cursor, for a copy of several'),
-    ('a', 'mark every block, or unmark them all'),
-    ('Enter', 'copy the selection as written, else the block at the cursor'),
-    ('!', 'copy its code to run in Claude, and put it in the prompt box'),
-    ('$', 'copy its code to run in a shell: no ! at all'),
-    ('*', 'put its shell code in a free shell of the tab, as a run of steps'),
-    ('A', 'copy the whole answer as written, and quit'),
-    ('p  n  ←  →', 'previous or next answer'),
-    ('w', 'every message of the turn, or its last one alone'),
-    ('C-d  C-u', 'scroll half a page'),
-    ('?', 'this help'),
-    ('q  Esc', 'quit with no copy'),
-    ('', ''),
-    ('Enter', 'Blocks of code alone are copied as their content, ready to run.'),
-    ('', 'A selection with prose is copied as markdown, fences included.'),
-    ('!  $', 'Only the blocks of code of the selection, and never its prose.'),
-    ('', '! puts one ! in front of them all, and $ none at all.'),
-    ('', '! and * leave out a block that is not shell, and say so.'),
-    ('*', 'Enter in that shell starts the run, a step per block.'),
-    ('', 'Each step keeps its output in a directory of its own.'),
-    ('a  !', 'Every shell command of the answer, in the prompt box of Claude.'),
-    ('a  $', 'Every block of code of the answer, for a shell.'),
-    ('', 'Space after a takes a block out of either.'),
-    ('', ''),
-    ('', 'Any key closes this help.'),
+    (('down', 'up'), 'next or previous block'),
+    (('code-next', 'code-previous'), 'next or previous block of code'),
+    (('first', 'last'), 'first or last block'),
+    (('mark',), 'mark the block at the cursor, for a copy of several'),
+    (('all',), 'mark every block, or unmark them all'),
+    (('code',), 'mark every block of code, or unmark them all'),
+    (('copy',), 'copy the selection as written, else the block at the cursor'),
+    (('claude',), 'copy its code to run in Claude, and put it in the prompt box'),
+    (('shell',), 'copy its code to run in a shell: no ! at all'),
+    (('run',), 'put its shell code in a free shell of the tab, as a run of steps'),
+    (('paste',), 'put its code in a free shell of the tab, as {shell} copies it'),
+    (('answer',), 'copy the whole answer as written, and quit'),
+    (('previous', 'next'), 'previous or next answer'),
+    (('every',), 'every message of the turn, or its last one alone'),
+    (('page-down', 'page-up'), 'scroll half a page'),
+    (('help',), 'this help'),
+    (('quit',), 'quit with no copy'),
+    ((), ''),
+    (('copy',), 'Blocks of code alone are copied as their content, ready to run.'),
+    ((), 'A selection with prose is copied as markdown, fences included.'),
+    (('claude', 'shell'), 'Only the blocks of code of the selection, and never its prose.'),
+    ((), '{claude} puts one ! in front of them all, and {shell} none at all.'),
+    ((), '{claude} and {run} leave out a block that is not shell, and say so.'),
+    (('run',), 'Enter in that shell starts the run, a step per block.'),
+    ((), 'Each step keeps its output in a directory of its own.'),
+    (('paste',), 'Enter in that shell runs the code as you would type it.'),
+    (('all', 'claude'), 'Every shell command of the answer, in the prompt box of Claude.'),
+    (('all', 'shell'), 'Every block of code of the answer, for a shell.'),
+    ((), '{mark} after {all} takes a block out of either.'),
+    (('all', 'code'), 'The prose of the answer alone.'),
+    ((), ''),
+    ((), 'Any key closes this help.'),
 )
 
 ITALIC = getattr(curses, 'A_ITALIC', 0)
@@ -366,51 +390,138 @@ def toggled(state, book):
     return fresh if cursor < 0 else dict(fresh, cursor=cursor)
 
 
-def step(state, key, book, height=20):
-    """Apply one key: the new state, and 'copy' or 'quit' if it ends the picker.
+def keys_file():
+    return os.path.join(os.path.dirname(sessions.sources_file()), 'keys')
+
+
+def _fault(lines):
+    """What is wrong in the lines of a keys file, and the letters it gives.
+
+    An action is bound once in the file, and a key holds one action once the
+    file is laid over the defaults, so that down = k alone cannot take k
+    from up.
+    """
+    keys, at = dict(LETTERS), {}
+    for n, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        action, equal, key = (part.strip() for part in line.partition('='))
+        if not equal:
+            return n, 'write it as action = key', keys
+        if action not in LETTERS:
+            return n, f'no action is named {action!r}: the README lists them', keys
+        if action in at:
+            return n, f'{action} is bound already, on line {at[action]}', keys
+        if len(key) != 1 or not key.isprintable() or key.isspace():
+            return n, f'give {action} one printable character, not {key!r}', keys
+        keys[action], at[action] = key, n
+    # at keeps the order of the lines, so a clash names its later line
+    owner = {letter: action for action, letter in LETTERS.items()
+             if letter and action not in at}
+    for action, n in at.items():
+        other = owner.setdefault(keys[action], action)
+        if other != action:
+            return n, (f'{keys[action]} is the key of {other} too: '
+                       'give one of them another key'), keys
+    return None, '', keys
+
+
+def bindings(path=None):
+    """The letter of each action, and why the keys file was refused, if it
+    was. A file refused binds nothing, so that the keys that the user knows
+    still work."""
+    path = path or keys_file()
+    where = running.tilde(path)
+    try:
+        with open(path, encoding='utf-8') as fp:
+            lines = fp.read().splitlines()
+    except FileNotFoundError:
+        return dict(LETTERS), ''
+    except ValueError:
+        fault = f'write {where} in UTF-8'
+    except OSError as why:
+        fault = f'{where}: {why.strerror}'
+    else:
+        n, fault, keys = _fault(lines)
+        if not fault:
+            return keys, ''
+        fault = f'{where}, line {n}: {fault}'
+    return dict(LETTERS), f'{fault}. The default keys hold.'
+
+
+def label(keys, actions):
+    """The keys of these actions in the help: their letters, then their named
+    keys."""
+    return '  '.join([keys[action] for action in actions if keys[action]]
+                     + [SHOWN[action] for action in actions if action in SHOWN])
+
+
+def names(keys):
+    """The key that a text of the help or the footer names for each action:
+    its letter, else its named key."""
+    return {action: letter or SHOWN.get(action, '') for action, letter in keys.items()}
+
+
+def helped(keys):
+    """The rows of the help, with the keys as they are bound."""
+    named = names(keys)
+    return [(label(keys, actions), what.format_map(named)) for actions, what in HELP]
+
+
+def action_of(key, keys):
+    """The action of a key: its named action, else the action bound to it."""
+    return NAMED.get(key) or next((action for action, letter in keys.items()
+                                   if letter == key), None)
+
+
+def step(state, key, book, height=20, keys=LETTERS):
+    """Apply one key: the new state, and the action that ends the picker, if
+    it does: 'copy', an action of TO_RUN, or 'quit'.
 
     A key that closes the help does nothing else, so a q read there quits
     nothing.
     """
     if state['help']:
         return dict(state, help=False), None
-    if key == '?':
+    action = action_of(key, keys)
+    if action == 'help':
         return dict(state, help=True), None
     found = shown(book, state)['blocks']
-    if key in MOVES:
-        cursor = max(0, min(len(found) - 1, state['cursor'] + MOVES[key]))
+    if action in MOVES:
+        cursor = max(0, min(len(found) - 1, state['cursor'] + MOVES[action]))
         return dict(state, cursor=cursor, follow=True), None
-    if key in CODE:
-        way = CODE[key]
+    if action in CODE:
+        way = CODE[action]
         ahead = range(state['cursor'] + way, len(found) if way > 0 else -1, way)
         cursor = next((i for i in ahead if found[i]['kind'] == 'code'),
                       state['cursor'])
         return dict(state, cursor=cursor, follow=True), None
-    if key in ENDS:
-        return dict(state, cursor=ENDS[key] % len(found), follow=True), None
-    if key in TURNS:
-        page = max(0, min(len(book) - 1, state['page'] + TURNS[key]))
+    if action in ENDS:
+        return dict(state, cursor=ENDS[action] % len(found), follow=True), None
+    if action in TURNS:
+        page = max(0, min(len(book) - 1, state['page'] + TURNS[action]))
         return (state if page == state['page']
                 else start(book, page, state['every'])), None
-    if key == 'w':
+    if action == 'every':
         return toggled(state, book), None
-    if key in SCROLLS:
-        top = max(0, state['top'] + SCROLLS[key] * max(1, height // 2))
+    if action in SCROLLS:
+        top = max(0, state['top'] + SCROLLS[action] * max(1, height // 2))
         return dict(state, top=top, follow=False), None
-    if key == ' ':
+    if action == 'mark':
         return dict(state, marked=state['marked'] ^ {state['cursor']}), None
     whole = frozenset(range(len(found)))
-    if key == 'a':
+    if action == 'all':
         return dict(state, marked=frozenset() if state['marked'] == whole
                     else whole), None
-    if key == 'A':
+    if action == 'code':
+        code = frozenset(i for i, block in enumerate(found) if block['kind'] == 'code')
+        return dict(state, marked=state['marked'] - code if code <= state['marked']
+                    else state['marked'] | code), None
+    if action == 'answer':
         return dict(state, marked=whole), 'copy'
-    if key in COPY:
-        return state, 'copy'
-    if key in TO_RUN:
-        return state, TO_RUN[key]
-    if key in QUIT:
-        return state, 'quit'
+    if action in ('copy', *TO_RUN, 'quit'):
+        return state, action
     return state, None
 
 
@@ -456,7 +567,8 @@ def prepared(done, state, page):
     shell with no ! at all. * keeps the blocks apart, a list of them, since
     each block runs as a step of its own. Claude and a run hand their code to
     a shell, so ! and * leave out a block in another language, as they leave
-    out the prose.
+    out the prose. v types the code of $ into a shell, such a block included:
+    the user reads it there and runs it by hand.
     """
     if done == 'copy':
         return selection(state, page)
@@ -483,6 +595,8 @@ def prepared(done, state, page):
     text = BANG.sub('', '\n'.join(block['text'] for block in code)).strip('\n')
     if done == 'shell':
         return text, f'{what} for a shell'
+    if done == 'paste':
+        return text, what
     return '!' + text, f'{what} for Claude{out}'
 
 
@@ -709,28 +823,42 @@ def put(screen, row, column, text, attr=0):
             pass
 
 
-def heading(book, state):
+def heading(book, state, keys=LETTERS):
     """The top line: which answer is on screen, and which of its messages.
     It names the mode, since w changes the blocks of the same answer."""
     count = book[state['page']]['messages']
     line = f" answer {state['page'] + 1}/{len(book)} · ← →"
     if state['every']:
-        return line + f' · every message ({count}), w for the last'
+        return line + f" · every message ({count}), {keys['every']} for the last"
     if count > 1:
-        return line + f' · last of {count} messages, w for all'
+        return line + f" · last of {count} messages, {keys['every']} for all"
     return line
 
 
-def draw(screen, state, book, prompt, rows, look):
-    """The answer under its prompt, or the help when it is asked for."""
+def draw(screen, state, book, prompt, rows, look, keys, trouble):
+    """The answer under its prompt, or the help when it is asked for.
+
+    The help keeps the fault of a keys file in sight after the first key has
+    cleared it from the bottom line.
+    """
     screen.erase()
     height, width = screen.getmaxyx()
-    put(screen, 0, 0, heading(book, state), look['title'])
-    put(screen, 0, max(0, width - 8), '? help', look['help'])
+    put(screen, 0, 0, heading(book, state, keys), look['title'])
+    corner = f"{keys['help']} help"
+    put(screen, 0, max(0, width - len(corner) - 2), corner, look['help'])
     if state['help']:
-        for y, (keys, what) in enumerate(HELP, 2):
-            put(screen, y, 3, keys, look['help-key'])
-            put(screen, y, 17, what, look['text'])
+        row = 2
+        if trouble:
+            for runs in wrap([(trouble, 'warn')], max(20, width - 6)):
+                put(screen, row, 3, ''.join(text for text, _ in runs), look['warn'])
+                row += 1
+            row += 1
+        lines = helped(keys)
+        # a letter bound beside the named keys of an action widens its label
+        column = max(17, 5 + max(len(shown_keys) for shown_keys, _ in lines))
+        for y, (shown_keys, what) in enumerate(lines, row):
+            put(screen, y, 3, shown_keys, look['help-key'])
+            put(screen, y, column, what, look['text'])
         screen.refresh()
         return
     for y, runs in enumerate(prompt, 1):
@@ -760,19 +888,19 @@ def draw(screen, state, book, prompt, rows, look):
     if state['said']:
         put(screen, height - 1, 1, state['said'], look['warn'])
     else:
-        put(screen, height - 1, 1, status + FOOTER, look['help'])
+        put(screen, height - 1, 1, status + FOOTER.format_map(names(keys)), look['help'])
     screen.refresh()
 
 
-def pick(book):
-    """Run the picker: the key that ended it, the text to copy and what it is
-    called, or None if the user quits."""
+def pick(book, keys, trouble):
+    """Run the picker: the action that ended it, the text to copy and what it
+    is called, or None if the user quits."""
     def run(screen):
         try:
             curses.curs_set(0)
         except curses.error:
             pass
-        look, state, drawn = palette(), opened(book), {}
+        look, state, drawn = palette(), dict(opened(book), said=trouble), {}
         while True:
             height, width = screen.getmaxyx()
             page = shown(book, state)
@@ -783,14 +911,14 @@ def pick(book):
             prompt, rows = drawn[shape]
             body = max(1, height - len(prompt) - 3)
             state = dict(state, top=view(rows, state, body))
-            draw(screen, state, book, prompt, rows, look)
+            draw(screen, state, book, prompt, rows, look, keys, trouble)
             key = screen.get_wch()
             if isinstance(key, int):
                 key = curses.keyname(key).decode()
             if key == '\x0c':
                 screen.clear()
-            state, done = step(dict(state, said=''), key, book, body)
-            if done in ('copy', *TO_RUN.values()):
+            state, done = step(dict(state, said=''), key, book, body, keys)
+            if done in ('copy', *TO_RUN):
                 try:
                     return (done, *prepared(done, state, shown(book, state)))
                 except Refused as why:
@@ -833,25 +961,33 @@ def refuse(why):
     return 1
 
 
-def launch(agent, blocks, what):
-    """Type the run of the blocks into the free shell of the tab of the agent,
-    without the Enter that starts it, or say why not.
+def launch(agent, code, what, run=True, keys=LETTERS):
+    """Type the code into the free shell of the tab of the agent, without the
+    Enter that runs it, or say why not. The code of a run is a list of
+    blocks, typed as a run of steps, and any other code is typed as it is.
 
     The shell is looked for once the picker has closed, since its command may
     have ended while the picker was open. The control characters come out
     before the check: with one at its end, a line that ends the run would pass.
     """
-    blocks = [CONTROLS.sub('', block) for block in blocks]
     try:
-        running.check(blocks)
-        shell, name = running.free_shell(api.panes(), agent, prompting.standing())
+        if run:
+            code = [CONTROLS.sub('', block) for block in code]
+            running.check(code, keys['shell'])
+        shell, name = running.free_shell(api.panes(), agent, prompting.standing(),
+                                         heredoc=run)
     except running.NoRun as why:
         return refuse(str(why))
-    run = running.prepare(agent, shell, name)
-    api.call('pane', 'send_text', pane_id=shell['pane_id'],
-             text=PASTE.format(running.typed(run, blocks)))
+    if run:
+        directory = running.prepare(agent, shell, name, again=keys['run'])
+        text = running.typed(directory, code)
+        line = f'typed {what}, press Enter there to start the run in {directory}'
+    else:
+        text = CONTROLS.sub('', code)
+        line = (f"press Enter in pane {shell['pane_id']}"
+                f"{f' ({name})' if name else ''} to run {what}")
+    api.call('pane', 'send_text', pane_id=shell['pane_id'], text=PASTE.format(text))
     api.call('pane', 'focus', pane_id=shell['pane_id'])
-    line = f'typed {what}, press Enter there to start the run in {run}'
     print(line)
     api.call('notification', 'show', title='copy', body=line, sound='none')
     return 0
@@ -873,16 +1009,17 @@ def main():
     # the last answer go to the pipe instead
     if not sys.stdout.isatty():
         for block in book[-1]['blocks']:
-            label = (block['lang'] or 'code') if block['kind'] == 'code' else block['kind']
-            print(f"{label:<10} {first_line(block['text'])}")
+            kind = (block['lang'] or 'code') if block['kind'] == 'code' else block['kind']
+            print(f"{kind:<10} {first_line(block['text'])}")
         return 0
 
-    picked = pick(book)
+    keys, trouble = bindings()
+    picked = pick(book, keys, trouble)
     if not picked:
         return 0
     done, text, what = picked
-    if done == 'run':
-        return launch(pane, text, what)
+    if done in ('run', 'paste'):
+        return launch(pane, text, what, run=done == 'run', keys=keys)
     clip(text)
     line = said(what, text)
     if done == 'claude':

@@ -98,6 +98,11 @@
       "shell_pid": 480,
       "foreground_process_group_id": 480,
       "foreground_processes": [{"pid": 480, "name": "fish"}]
+    },
+    "w3:p9": {
+      "shell_pid": 490,
+      "foreground_process_group_id": 490,
+      "foreground_processes": [{"pid": 490, "name": "dash"}]
     }
   },
   "screens": {
@@ -106,6 +111,7 @@
     "w3:p2": "make: done\nuser@host:~/w$ \n\n",
     "w3:p5": "user@host:~/w% git push --force",
     "w3:p7": "host% ",
-    "w3:p8": "user@host ~/w> "
+    "w3:p8": "user@host ~/w> ",
+    "w3:p9": "$ "
   }
 }

@@ -6,7 +6,7 @@ A mouse copy takes the screen grid. Claude Code draws a code block two columns i
 
 ## Requirements
 
-- Herdr 0.9.0 or later, on Linux. The `*` key asks Herdr which process runs in each shell, and was checked on Herdr 0.9.3 only.
+- Herdr 0.9.0 or later, on Linux. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
 - Python 3.10 or later at `/usr/bin/python3`, with no other package. If Pygments is installed for that Python, the picker colours the code.
 - `script` of util-linux, for the `*` key.
 
@@ -36,11 +36,12 @@ Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last an
 |---|---|
 | `j` `k` or `↓` `↑`, `Tab` `Shift+Tab` | next or previous block, or block of code |
 | `g` `G` | first or last block |
-| `Space`, `a` | mark the block at the cursor, or every block |
+| `Space`, `a`, `c` | mark the block at the cursor, every block, or every block of code |
 | `Enter` | copy the marked blocks, else the block at the cursor |
 | `!` | copy their shell code behind one `!`, and put it in Claude's prompt box |
 | `$` | copy their code for a shell, with no `!` |
 | `*` | put their shell code in a free shell of the tab, as a run of one step per block |
+| `v` | put their code in a free shell of the tab, as `$` copies it |
 | `A` | copy the whole answer as written, and quit |
 | `p` `n` or `←` `→` | previous or next answer |
 | `w` | every message of the turn, or its last one alone |
@@ -54,6 +55,8 @@ The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard writ
 ## Run the blocks in a shell of the tab
 
 The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt: the one you stand in, else the first.
+
+The `v` key puts the code that `$` copies in the free shell as it is, and sends no Enter either. It starts no run: no step, no log, and no wake of Claude. It refuses a busy shell or a typed line as `*` does, and takes only bash, zsh or fish. Their line editors hold a bracketed paste until your Enter. Another shell, such as dash, takes each newline of the paste as an Enter and runs the lines as they arrive. Bash does the same if you turned bracketed paste off: use `$` there instead.
 
 The shell shows the blocks as they will run, behind the script of the run:
 
@@ -89,6 +92,35 @@ The waiter types only into a box that can take a line. Claude must not be workin
 
 If two runs of one Claude end together, the second wake waits for the turn that the first one starts. For that, each waiter takes a lock on the pane of Claude: an empty file `wake-<pane id>.lock` in `~/.local/state/herdr-claude-copy/`, next to `runs/`. These files are harmless, and you can delete them when no run is waiting.
 
+## Rebind the keys
+
+To give an action another key, write one `action = key` line per binding in `~/.config/herdr-claude-copy/keys`, or in `$XDG_CONFIG_HOME/herdr-claude-copy/keys` if you set that variable:
+
+```
+# the run on ù, the help on h
+run = ù
+help = h
+```
+
+A key is one printable character, such as `ù` in a UTF-8 terminal, and its case counts. It replaces the letter of the action: after `run = ù`, `*` does nothing. The named keys keep their action: the arrows, `Tab`, `Shift+Tab`, `Home`, `End`, the Page keys, `Enter`, `Esc`, `Space`, `Ctrl+D` and `Ctrl+U`. An action with no letter can take one beside its named keys. A line that starts with `#` is a comment, and `run = #` binds `#`.
+
+| Actions | Letters by default |
+|---|---|
+| `down` `up` | `j` `k` |
+| `code-next` `code-previous` | none, `Tab` `Shift+Tab` only |
+| `first` `last` | `g` `G` |
+| `previous` `next` | `p` `n` |
+| `mark` `all` `code` | none, `Space` only; `a`; `c` |
+| `copy` `answer` | none, `Enter` only; `A` |
+| `claude` `shell` `run` `paste` | `!` `$` `*` `v` |
+| `every` | `w` |
+| `page-down` `page-up` | none, `Ctrl+D` `Ctrl+U` only |
+| `help` `quit` | `?` `q` |
+
+The picker reads the file when it opens, and the help and the footer show the keys as you bound them. To swap two keys, bind both: `down = k` and `up = j`.
+
+If a line is wrong, the picker refuses the whole file and uses the default keys. A line is wrong if it names no action of the table, binds an action twice, or gives a key that isn't one printable character. A key that another action holds is wrong too. The picker names the line and the fault at the bottom of the screen until the first key, and at the top of the help.
+
 ## A session in a container
 
 The picker reads the transcripts under `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`. A Claude Code that runs in a container writes them in another directory. Add that directory to `~/.config/herdr-claude-copy/sources`, one per line:
@@ -104,6 +136,7 @@ Each line adds to the host directory, and never replaces it. The optional second
 
 - The `!` key puts the code in Claude's prompt box and sends no Enter. When you press Enter, Claude Code runs the text in a shell with your rights, so read it first. The picker removes control characters from the text, so an answer can't end the paste early and send a line.
 - The `*` key puts the code in a shell and sends no Enter. When you press Enter, the shell runs the blocks with your rights, so read them first. The picker removes control characters from the blocks, as for the `!` key.
+- The `v` key puts the code in bash, zsh or fish and sends no Enter, without the control characters. When you press Enter, the shell runs the code with your rights, so read it first. If bracketed paste is off in that shell, each line runs as it arrives.
 - The wake that the waiter types into Claude's prompt box holds the name of the run, the status of each step and the directory of the run. It never holds what a step wrote.
 - `script` follows a link planted at the path of its log. If your agent can write the runs directory, it can plant one and make the shell write over another of your files. If it can write the directory above, it can also hold the lock of a wake and keep Claude from hearing of its runs. Check that the sandbox of your agent can't write `~/.local/state/herdr-claude-copy`.
 - Herdr doesn't review or sandbox plugins. This one reads your Claude Code transcripts and drives panes through the Herdr socket: read `bin/` before you install it.
