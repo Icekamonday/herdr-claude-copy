@@ -931,6 +931,14 @@ def pick(book, keys, trouble):
     return curses.wrapper(run)
 
 
+def type_into(pane_id, text):
+    """Put the text in that pane as a paste, with no Enter, and focus it. The
+    control characters come out, so that the text cannot end the paste."""
+    api.call('pane', 'send_text', pane_id=pane_id,
+             text=PASTE.format(CONTROLS.sub('', text)))
+    api.call('pane', 'focus', pane_id=pane_id)
+
+
 def place(agent, text):
     """Put the text in the prompt box of the agent without sending it, or say
     why not.
@@ -948,48 +956,54 @@ def place(agent, text):
         return 'the prompt box is not on screen'
     if held:
         return 'the prompt box already holds a line'
-    text = CONTROLS.sub('', text)
-    api.call('pane', 'send_text', pane_id=agent['pane_id'], text=PASTE.format(text))
-    api.call('pane', 'focus', pane_id=agent['pane_id'])
+    type_into(agent['pane_id'], CONTROLS.sub('', text))
     return None
 
 
+def say(line):
+    """Print the line, and show it as a toast too: the pane closes as soon as
+    the script exits."""
+    print(line)
+    api.call('notification', 'show', title='copy', body=line, sound='none')
+
+
 def refuse(why):
-    """Say it as a toast too: the pane closes as soon as the script exits."""
-    print(why)
-    api.call('notification', 'show', title='copy', body=why, sound='none')
+    say(why)
     return 1
 
 
-def launch(agent, code, what, run=True, keys=LETTERS):
-    """Type the code into the free shell of the tab of the agent, without the
-    Enter that runs it, or say why not. The code of a run is a list of
-    blocks, typed as a run of steps, and any other code is typed as it is.
+def launch(agent, blocks, what, keys=LETTERS):
+    """Type the blocks into the free shell of the tab of the agent as a run of
+    steps, without the Enter that starts it, or say why not.
 
     The shell is looked for once the picker has closed, since its command may
     have ended while the picker was open. The control characters come out
     before the check: with one at its end, a line that ends the run would pass.
     """
+    blocks = [CONTROLS.sub('', block) for block in blocks]
     try:
-        if run:
-            code = [CONTROLS.sub('', block) for block in code]
-            running.check(code, keys['shell'])
-        shell, name = running.free_shell(api.panes(), agent, prompting.standing(),
-                                         heredoc=run)
+        running.check(blocks, keys['shell'])
+        shell, name = running.free_shell(api.panes(), agent, prompting.standing())
     except running.NoRun as why:
         return refuse(str(why))
-    if run:
-        directory = running.prepare(agent, shell, name, again=keys['run'])
-        text = running.typed(directory, code)
-        line = f'typed {what}, press Enter there to start the run in {directory}'
-    else:
-        text = CONTROLS.sub('', code)
-        line = (f"press Enter in pane {shell['pane_id']}"
-                f"{f' ({name})' if name else ''} to run {what}")
-    api.call('pane', 'send_text', pane_id=shell['pane_id'], text=PASTE.format(text))
-    api.call('pane', 'focus', pane_id=shell['pane_id'])
-    print(line)
-    api.call('notification', 'show', title='copy', body=line, sound='none')
+    directory = running.prepare(agent, shell, name, again=keys['run'])
+    type_into(shell['pane_id'], running.typed(directory, blocks))
+    say(f'typed {what}, press Enter there to start the run in {directory}')
+    return 0
+
+
+def paste(agent, code, what):
+    """Type the code into the free shell of the tab of the agent as it is,
+    without the Enter that runs it, or say why not. The shell is looked for
+    as for a run."""
+    try:
+        shell, name = running.free_shell(api.panes(), agent, prompting.standing(),
+                                         heredoc=False)
+    except running.NoRun as why:
+        return refuse(str(why))
+    type_into(shell['pane_id'], code)
+    say(f"press Enter in pane {shell['pane_id']}{f' ({name})' if name else ''} "
+        f"to run {what}")
     return 0
 
 
@@ -1018,16 +1032,17 @@ def main():
     if not picked:
         return 0
     done, text, what = picked
-    if done in ('run', 'paste'):
-        return launch(pane, text, what, run=done == 'run', keys=keys)
+    if done == 'run':
+        return launch(pane, text, what, keys=keys)
+    if done == 'paste':
+        return paste(pane, text, what)
     clip(text)
     line = said(what, text)
     if done == 'claude':
         why = place(pane, text)
         line += f', not put in the prompt box: {why}' if why \
             else ', and put in the prompt box'
-    print(line)
-    api.call('notification', 'show', title='copy', body=line, sound='none')
+    say(line)
     return 0
 
 

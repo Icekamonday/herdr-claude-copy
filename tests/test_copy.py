@@ -731,7 +731,7 @@ class Picking(unittest.TestCase):
                 unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': room,
                                                       'HERDR_PANE_ID': shell}), \
                 stub_log() as log, contextlib.redirect_stdout(io.StringIO()) as said:
-            status = self.copy.launch(agent, 'make\033[201~\nls', '2 blocks', run=False)
+            status = self.copy.paste(agent, 'make\033[201~\nls', '2 blocks')
             asked = pathlib.Path(log).read_text()
         return status, said.getvalue(), asked, os.listdir(room)
 
