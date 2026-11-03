@@ -947,8 +947,7 @@ def place(agent, text):
     that holds a draft would take it as its tail. The status is read again,
     since the agent may have moved on while the picker was open.
     """
-    agent = next((pane for pane in api.panes()
-                  if pane['pane_id'] == agent['pane_id']), agent)
+    agent = api.pane(agent['pane_id']) or agent
     if agent.get('agent_status') == 'blocked':
         return 'the agent is waiting on a dialog'
     held = prompting.box(prompting.screen(agent))

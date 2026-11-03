@@ -159,7 +159,7 @@ def started(pane):
     wake to take the lock finds the agent at work."""
     deadline = time.time() + STARTED
     while time.time() < deadline:
-        agent = next((p for p in api.panes() if p['pane_id'] == pane), {})
+        agent = api.pane(pane) or {}
         if agent.get('agent_status') in HELD:
             return
         time.sleep(TICK)
@@ -173,7 +173,7 @@ def knock(pane, text):
     # every agent gone
     if not panes:
         return None, 'the server did not answer'
-    agent = next((p for p in panes if p['pane_id'] == pane), None)
+    agent = api.pane(pane, panes)
     if not (agent and agent.get('agent')):
         return f'{pane} holds no agent, no wake', None
     why = refusal(agent)

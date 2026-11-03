@@ -38,7 +38,7 @@ def target(panes, standing):
     A tab holds one agent and a few shells. One with two agents names one
     only when you stand in it: from a shell, either could be meant.
     """
-    here = next((pane for pane in panes if pane['pane_id'] == standing), None) \
+    here = api.pane(standing, panes) \
         or next((pane for pane in panes if pane.get('focused')), None)
     if not here:
         return None

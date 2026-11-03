@@ -51,3 +51,9 @@ def call(*words, **params):
 
 def panes(**params):
     return call('pane', 'list', **params).get('panes', [])
+
+
+def pane(pane_id, among=None):
+    """That pane, or None: from the list given, else from a list asked now."""
+    among = panes() if among is None else among
+    return next((found for found in among if found['pane_id'] == pane_id), None)
