@@ -104,6 +104,11 @@ def text(words):
     return {'type': 'text', 'text': words}
 
 
+def pairs(book):
+    """Each answer of the book as its prompt and its text."""
+    return [(page['prompt'], page['text']) for page in book]
+
+
 def write_transcript(path, records):
     with open(path, 'w') as fp:
         fp.writelines(json.dumps(record) + '\n' for record in records)
@@ -250,6 +255,18 @@ class Picking(unittest.TestCase):
         self.assertEqual(rows[2].strip(), 'keys, line 2: fault')
         self.assertEqual(rows[4], '   j  k  ↓  ↑' + ' ' * 4 + 'next or previous block')
 
+    def test_the_key_table_of_the_readme_holds_the_keys_of_the_help(self):
+        """A key that the help gains or loses fails here until the README
+        follows. The README spells three named keys in full."""
+        with open(os.path.join(os.path.dirname(HERE), 'README.md'), encoding='utf-8') as fp:
+            table = fp.read().split('| Key | Action |', 1)[1].split('\n\n', 1)[0]
+        spelled = {'S-Tab': 'Shift+Tab', 'C-d': 'Ctrl+D', 'C-u': 'Ctrl+U'}
+        helped = {spelled.get(key, key) for shown, _ in self.copy.helped(self.copy.LETTERS)
+                  for key in shown.split('  ') if key}
+        written = {key for row in table.splitlines()[2:]
+                   for key in re.findall(r'`([^`]+)`', row.split('|')[1])}
+        self.assertEqual(written, helped)
+
     def test_a_label_wider_than_its_column_pushes_the_text_of_the_help(self):
         keys, _, _ = self.keys('code-next = x\ncode-previous = y\n')
         self.assertIn('   x  y  Tab  S-Tab  next or previous block of code',
@@ -303,7 +320,7 @@ class Picking(unittest.TestCase):
                 claude('m4', text('a subagent'), isSidechain=True),
             ])
             book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
+        self.assertEqual(pairs(book),
                          [('first question', 'Found\n\nit.'),
                           ('second question', 'Here:\n\n```sh\nls\n```')])
         state = self.copy.opened(book)
@@ -323,8 +340,7 @@ class Picking(unittest.TestCase):
                 claude('m2', text('Fixed.')),
             ])
             book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [('fix the bug', 'Fixed.')])
+        self.assertEqual(pairs(book), [('fix the bug', 'Fixed.')])
 
     def test_a_turn_that_the_tail_cuts_keeps_its_answer(self):
         """One turn can write more than the tail, so its answer cannot wait for
@@ -337,7 +353,7 @@ class Picking(unittest.TestCase):
                                     claude('m1', text('x' * 400)), *kept])
             with unittest.mock.patch.object(self.copy.sessions, 'FIND_WINDOW', window(kept)):
                 book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
+        self.assertEqual(pairs(book),
                          [(self.copy.CUT, 'After the cut.'), ('second question', 'Kept.')])
 
     def test_a_tail_inside_one_turn_still_gives_its_answer(self):
@@ -348,8 +364,7 @@ class Picking(unittest.TestCase):
                                     claude('m0', text('x' * 400)), *kept])
             with unittest.mock.patch.object(self.copy.sessions, 'FIND_WINDOW', window(kept)):
                 book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [(self.copy.CUT, 'Done.')])
+        self.assertEqual(pairs(book), [(self.copy.CUT, 'Done.')])
         self.assertEqual(book[0]['every']['text'], 'Looking.\n\nDone.')
 
     def test_w_shows_every_message_of_the_turn_in_its_order(self):
@@ -553,8 +568,7 @@ class Picking(unittest.TestCase):
                 claude('m1', text('It passes.')),
             ])
             book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [('! cd /tmp\npwd', 'It passes.')])
+        self.assertEqual(pairs(book), [('! cd /tmp\npwd', 'It passes.')])
 
     def test_code_in_bold_loses_its_backticks(self):
         self.assertEqual(self.copy.spans('**T1, the `!` mark** and more'),
