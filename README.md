@@ -82,7 +82,7 @@ runs/2026-10-28-3/
 
 A tool that writes its own log can write it into `$STEP_DIR`. A step that fails doesn't stop the run, since its status is often the answer. `Ctrl+C` stops the step and the rest of the run. A run starts once: if you type the same text again from the history, press `*` again instead. `bin/running.py` states the format of `job`.
 
-The run is a heredoc, so the key refuses a shell other than bash, zsh or another POSIX shell. The text goes out as a bracketed paste, as for the `!` key: bash 5.1 and zsh turn it on by default. If your shell has it off, nothing runs before your Enter either, but you can't edit the lines, and a tab in a block triggers completion.
+The run is a heredoc, and it goes out as a bracketed paste, as for the `!` key. So the key takes only bash or zsh. Fish reads no heredoc. Dash and the other shells read no bracketed paste: they take its markers as text, and the run wouldn't start. The key refuses a shell named `sh` too, since that name doesn't tell dash from bash. Bash 5.1 and zsh turn bracketed paste on by default. If your shell has it off, nothing runs before your Enter either, but you can't edit the lines, and a tab in a block triggers completion.
 
 Herdr doesn't report where the cursor is, so the picker reads the last line on the screen of the shell. If that line doesn't end with `$`, `#`, `%`, `>` or `❯`, you may be typing a command there, and the key does nothing but say so. If your prompt ends with another character, or shows text on its right, the key refuses every time.
 

@@ -851,8 +851,8 @@ class Running(unittest.TestCase):
 
         In the world, bash in w3:p2 and zsh in w3:p7 are at their prompt.
         w3:p5 is at its prompt too, with a line that the user is typing, and
-        w3:p8 runs fish, and w3:p9 dash. w3:p3 runs cargo, w3:p4 a shell in a
-        container, and w3:p6 a panel.
+        w3:p8 runs fish, w3:p9 dash, and w3:p10 a shell named sh. w3:p3 runs
+        cargo, w3:p4 a shell in a container, and w3:p6 a panel.
         """
         agent = {'pane_id': 'w3:p1', 'tab_id': 'w3:t1', 'agent': 'claude'}
         panes = [agent, *({'pane_id': shell, 'tab_id': tab} for shell in shells)]
@@ -889,6 +889,15 @@ class Running(unittest.TestCase):
         with self.assertRaisesRegex(self.running.NoRun,
                                     '^open bash or zsh in this tab: .* which fish '):
             self.free('w3:p8')
+
+    def test_a_shell_that_reads_no_bracketed_paste_takes_no_run(self):
+        """dash takes the paste markers as text, and keeps the heredoc open on
+        the line that should close it. A shell named sh may be dash."""
+        for shell, name in (('w3:p9', 'dash'), ('w3:p10', 'sh')):
+            with self.subTest(name), self.assertRaisesRegex(
+                    self.running.NoRun, f'^open bash or zsh in this tab: {name} may read no '
+                                        'bracketed paste, and the run would not start$'):
+                self.free(shell)
 
     def test_a_line_is_empty_when_it_ends_on_a_prompt(self):
         for screen in ('out\nuser@host:~/w$ \n\n', 'host% ', '❯ ', 'root@host:/# '):
