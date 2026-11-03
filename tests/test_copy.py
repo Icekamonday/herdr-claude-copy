@@ -1131,18 +1131,25 @@ class Waking(unittest.TestCase):
         """The shell closed, and took the run with it."""
         run = self.job('=== START 1', '=== END 1 rc=0', '=== START 2')
         gone = subprocess.Popen(['true'])
+        watched = self.waking.watch(gone.pid)
+        self.addCleanup(os.close, watched)
         gone.wait()
-        self.assertTrue(self.waking.end(run, gone.pid, '1')[1])
+        self.assertTrue(self.waking.end(run, watched)[1])
         _, prompts = self.deliver(run, cut=True)
         self.assertIn('Step 1 ended with rc=0, and the shell closed during step 2. The files',
                       prompts[0])
 
-    def test_a_pid_that_another_process_took_is_a_run_that_ended(self):
-        """A process that began at another tick is not the run."""
-        run = self.job('=== START 1')
-        self.assertIsNotNone(self.waking.born(os.getpid()))
-        self.assertTrue(self.waking.end(run, os.getpid(), 'another tick')[1])
-        self.assertFalse(self.waking.end(self.job(*self.FULL), os.getpid(), 'another tick')[1])
+    def test_a_run_alive_ends_at_its_last_mark_and_a_run_gone_at_once(self):
+        """A pid that no process holds is a run that ended before its waiter
+        could watch it."""
+        watched = self.waking.watch(os.getpid())
+        self.addCleanup(os.close, watched)
+        self.assertFalse(self.waking.exited(watched))
+        self.assertFalse(self.waking.end(self.job(*self.FULL), watched)[1])
+        gone = subprocess.Popen(['true'])
+        gone.wait()
+        self.assertIsNone(self.waking.watch(gone.pid))
+        self.assertTrue(self.waking.end(self.job('=== START 1'), None)[1])
 
     def test_an_agent_at_work_or_on_a_dialog_gets_the_wake_after(self):
         """A line typed during a turn waits behind it, and one typed under a
@@ -1281,6 +1288,20 @@ class Waking(unittest.TestCase):
         self.assertTrue(said.endswith(' woke w2:p1\n'), said)
         self.assertIn('and the run is over. The shell closed during step 1. The files',
                       prompts[0])
+
+    def test_a_run_gone_before_its_waiter_starts_wakes_its_agent(self):
+        """The waiter starts, and tells the agent that the shell closed."""
+        run = self.job('=== START 1')
+        gone = subprocess.Popen(['true'])
+        gone.wait()
+        with stub_log() as log:
+            started = subprocess.run([sys.executable, os.path.join(BIN, 'waking.py'), run,
+                                      str(gone.pid)], check=False, timeout=10)
+            said = self.wait_for(run)
+            prompts = self.prompts(log)
+        self.assertEqual(started.returncode, 0)
+        self.assertTrue(said.endswith(' woke w2:p1\n'), said)
+        self.assertIn('The shell closed during step 1.', prompts[0])
 
 
 class Resolution(unittest.TestCase):

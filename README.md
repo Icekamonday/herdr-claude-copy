@@ -6,7 +6,7 @@ A mouse copy takes the screen grid. Claude Code draws a code block two columns i
 
 ## Requirements
 
-- Herdr 0.9.0 or later, on Linux. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
+- Herdr 0.9.0 or later, on Linux. The wake of a run needs Linux 5.3 or later. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
 - Python 3.10 or later at `/usr/bin/python3`, with no other package. If Pygments is installed for that Python, the picker colours the code.
 - `script` of util-linux, for the `*` key.
 
