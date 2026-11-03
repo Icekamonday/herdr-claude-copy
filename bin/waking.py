@@ -15,6 +15,7 @@ run, and a wake costs a turn.
 
 import fcntl
 import os
+import select
 import sys
 import time
 
@@ -32,21 +33,21 @@ QUIET = 'no-wake'           # the file that cancels a wake, in the directory of 
 HELD = ('working', 'blocked')
 
 
-def born(pid):
-    """When that process began, or None once it has ended.
+def watch(pid):
+    """A descriptor of that process, or None if it has ended already.
 
-    A process that ends leaves its pid to the next one, which never began at
-    the same clock tick.
+    A process that ends leaves its pid to the next one, and its descriptor
+    to none.
     """
     try:
-        with open(f'/proc/{pid}/stat') as fp:
-            stat = fp.read()
-    except OSError:
+        return os.pidfd_open(pid)
+    except ProcessLookupError:
         return None
-    # the name of the command comes in parentheses, and may hold a space
-    fields = stat[stat.rindex(')') + 2:].split()
-    # Z: a process that ended, and that its parent has not reaped yet
-    return None if fields[0] == 'Z' else fields[19]
+
+
+def exited(fd):
+    """Whether the process of that descriptor has ended, reaped or not."""
+    return fd is None or bool(select.select([fd], [], [], 0)[0])
 
 
 def job(run):
@@ -107,15 +108,15 @@ def wake_text(run, job, cut):
             f'Read them, then go on with the task.')
 
 
-def end(run, pid, began):
+def end(run, fd):
     """Wait until the run is over, and return its job, and whether its shell
     closed first."""
     while True:
         # looked at before the job, so that a run found ended has written
         # all its marks
-        alive = born(pid) == began
+        gone = exited(fd)
         found = job(run)
-        if over(found) or not alive:
+        if over(found) or gone:
             return found, not over(found)
         time.sleep(TICK)
 
@@ -146,12 +147,7 @@ def refusal(agent):
     status = agent.get('agent_status')
     if status in HELD:
         return f'the agent is {status}'
-    held = prompting.box(prompting.screen(agent))
-    if held is None:
-        return 'the prompt box is not on screen'
-    if held:
-        return 'the prompt box holds a line'
-    return None
+    return prompting.box_refusal(agent)
 
 
 def started(pane):
@@ -159,7 +155,7 @@ def started(pane):
     wake to take the lock finds the agent at work."""
     deadline = time.time() + STARTED
     while time.time() < deadline:
-        agent = next((p for p in api.panes() if p['pane_id'] == pane), {})
+        agent = api.pane(pane) or {}
         if agent.get('agent_status') in HELD:
             return
         time.sleep(TICK)
@@ -173,15 +169,18 @@ def knock(pane, text):
     # every agent gone
     if not panes:
         return None, 'the server did not answer'
-    agent = next((p for p in panes if p['pane_id'] == pane), None)
+    agent = api.pane(pane, panes)
     if not (agent and agent.get('agent')):
         return f'{pane} holds no agent, no wake', None
     why = refusal(agent)
     if why:
         return None, why
-    prompted = api.call('agent', 'prompt', target=pane, text=text)
+    try:
+        prompted = api.request('agent', 'prompt', target=pane, text=text)
+    except api.Refused as why:
+        return None, f'the prompt was refused: {why}'
     if prompted.get('type') != 'agent_prompted':
-        return None, 'the prompt was refused, or its reply lost'
+        return None, 'the reply to the prompt was lost'
     started(pane)
     return f'woke {pane}', None
 
@@ -190,10 +189,9 @@ def deliver(run, found, cut, ended):
     """Type the wake into the box of the agent that the run names, once the box
     can take it, and say how the wait ended.
 
-    A refused prompt and a lost reply both come back empty from api.call, and
-    both are tried again. A refused one typed nothing. A lost one may have
-    typed the wake, which then comes twice: a double wake costs a turn, and a
-    lost one leaves Claude waiting.
+    A refused prompt and a lost reply are both tried again. A refused one
+    typed nothing. A lost one may have typed the wake, which then comes twice:
+    a double wake costs a turn, and a lost one leaves Claude waiting.
     """
     if not found['ends'] and not cut:
         return 'the run has no step, and nothing to tell'
@@ -218,12 +216,13 @@ def deliver(run, found, cut, ended):
 
 def main(argv):
     run, pid = argv[1], int(argv[2])
-    began = born(pid)
-    if began is None:
-        print(f'no process {pid} runs {run}', file=sys.stderr)
+    # both opened before the fork, so that the shell shows why one failed
+    try:
+        fd = watch(pid)
+    except OSError as why:
+        print(f'cannot watch process {pid}: {why.strerror}', file=sys.stderr)
         return 1
-    # opened before the fork, so that the shell shows why it failed. A file
-    # that is already there may be a link that an agent planted
+    # a file that is already there may be a link that an agent planted
     try:
         log = os.open(os.path.join(run, 'wake.log'),
                       os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -235,11 +234,13 @@ def main(argv):
     os.setsid()
     # a directory that the wait holds could not be unmounted
     os.chdir('/')
+    # the run starts the waiter with 0, 1 and 2 open, so the log and the
+    # descriptor of the run lie above them and survive these
     os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
     os.dup2(log, 1)
     os.dup2(log, 2)
     try:
-        found, cut = end(run, pid, began)
+        found, cut = end(run, fd)
         said = deliver(run, found, cut, time.time())
     except OSError as why:
         said = f'no wake: {why}'

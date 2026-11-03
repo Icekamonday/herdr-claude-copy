@@ -6,7 +6,7 @@ A mouse copy takes the screen grid. Claude Code draws a code block two columns i
 
 ## Requirements
 
-- Herdr 0.9.0 or later, on Linux. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
+- Herdr 0.9.0 or later, on Linux. The wake of a run needs Linux 5.3 or later. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
 - Python 3.10 or later at `/usr/bin/python3`, with no other package. If Pygments is installed for that Python, the picker colours the code.
 - `script` of util-linux, for the `*` key.
 
@@ -52,6 +52,8 @@ The picker works with the keyboard alone, and a click does nothing.
 
 The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard write. The picker finds the session by the title of its pane, which Claude Code sets to the session name, then by the session id that Herdr holds. If the title names no session, the session id decides alone: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, for example, the pane keeps the title that the shell set. If neither works, name the session with `/rename`.
 
+The plugin doesn't need the Claude Code integration of Herdr. Without it, the picker finds a session by the title of its pane alone, and can miss a session that `/cd` moved to another project.
+
 ## Run the blocks in a shell of the tab
 
 The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt: the one you stand in, else the first.
@@ -82,7 +84,7 @@ runs/2026-10-28-3/
 
 A tool that writes its own log can write it into `$STEP_DIR`. A step that fails doesn't stop the run, since its status is often the answer. `Ctrl+C` stops the step and the rest of the run. A run starts once: if you type the same text again from the history, press `*` again instead. `bin/running.py` states the format of `job`.
 
-The run is a heredoc, so the key refuses a shell other than bash, zsh or another POSIX shell. The text goes out as a bracketed paste, as for the `!` key: bash 5.1 and zsh turn it on by default. If your shell has it off, nothing runs before your Enter either, but you can't edit the lines, and a tab in a block triggers completion.
+The run is a heredoc, and it goes out as a bracketed paste, as for the `!` key. So the key takes only bash or zsh. Fish reads no heredoc. Dash and the other shells read no bracketed paste: they take its markers as text, and the run wouldn't start. The key refuses a shell named `sh` too, since that name doesn't tell dash from bash. Bash 5.1 and zsh turn bracketed paste on by default. If your shell has it off, nothing runs before your Enter either, but you can't edit the lines, and a tab in a block triggers completion.
 
 Herdr doesn't report where the cursor is, so the picker reads the last line on the screen of the shell. If that line doesn't end with `$`, `#`, `%`, `>` or `❯`, you may be typing a command there, and the key does nothing but say so. If your prompt ends with another character, or shows text on its right, the key refuses every time.
 
@@ -97,12 +99,12 @@ If two runs of one Claude end together, the second wake waits for the turn that 
 To give an action another key, write one `action = key` line per binding in `~/.config/herdr-claude-copy/keys`, or in `$XDG_CONFIG_HOME/herdr-claude-copy/keys` if you set that variable:
 
 ```
-# the run on ù, the help on h
-run = ù
+# the paste on ù, the help on h
+paste = ù
 help = h
 ```
 
-A key is one printable character, such as `ù` in a UTF-8 terminal, and its case counts. It replaces the letter of the action: after `run = ù`, `*` does nothing. The named keys keep their action: the arrows, `Tab`, `Shift+Tab`, `Home`, `End`, the Page keys, `Enter`, `Esc`, `Space`, `Ctrl+D` and `Ctrl+U`. An action with no letter can take one beside its named keys. A line that starts with `#` is a comment, and `run = #` binds `#`.
+A key is one printable character, such as `ù` in a UTF-8 terminal, and its case counts. It replaces the letter of the action: after `paste = ù`, `v` does nothing. The named keys keep their action: the arrows, `Tab`, `Shift+Tab`, `Home`, `End`, the Page keys, `Enter`, `Esc`, `Space`, `Ctrl+D` and `Ctrl+U`. An action with no letter can take one beside its named keys. A line that starts with `#` is a comment, and `run = #` binds `#`.
 
 | Actions | Letters by default |
 |---|---|

@@ -20,7 +20,8 @@ STATE = os.environ.get('CLAUDE_TMUX_STATE') or os.path.join(
     'claude-tmux')
 RENAMED_WITHIN = 86400        # a transcript quiet for longer runs in no pane
 NAME_WINDOW = 65536           # Claude Code writes the name again at each turn
-FIND_WINDOW = 4 << 20         # but one turn can write megabytes after it
+# one turn can write megabytes after the name, or after the prompt of the turn
+FIND_WINDOW = 4 << 20
 PAYLOAD_MOST = 65536          # a payload holds about 2 KB
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
 PROJECT = re.compile(r'[A-Za-z0-9-]+')    # what project() leaves of a cwd
@@ -28,18 +29,25 @@ NAMED = ('custom-title', 'agent-name')    # the records of a name that the user 
 GUESSED = 'ai-title'                      # the record of the name that Claude Code gave
 
 
-def _names(path, window):
-    """The last name that the user gave a session, and the last one that
-    Claude Code gave it, from the tail of its transcript."""
+def tail(path, window):
+    """The last window bytes of a file, empty if it cannot be read, and whether
+    the file holds more."""
     try:
         with open(path, 'rb') as fp:
             fp.seek(0, 2)
-            fp.seek(max(0, fp.tell() - window))
-            tail = fp.read()
+            size = fp.tell()
+            fp.seek(max(0, size - window))
+            return fp.read(), size > window
     except (OSError, TypeError):
-        return '', ''
+        return b'', False
+
+
+def _names(path, window):
+    """The last name that the user gave a session, and the last one that
+    Claude Code gave it, from the tail of its transcript."""
+    read, _ = tail(path, window)
     guessed = ''
-    for line in reversed(tail.splitlines()):
+    for line in reversed(read.splitlines()):
         if not any(kind.encode() in line for kind in (*NAMED, GUESSED)):
             continue
         try:

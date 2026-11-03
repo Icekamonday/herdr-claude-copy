@@ -104,9 +104,19 @@ def text(words):
     return {'type': 'text', 'text': words}
 
 
+def pairs(book):
+    """Each answer of the book as its prompt and its text."""
+    return [(page['prompt'], page['text']) for page in book]
+
+
 def write_transcript(path, records):
     with open(path, 'w') as fp:
         fp.writelines(json.dumps(record) + '\n' for record in records)
+
+
+def window(records):
+    """A tail that holds those records and the end of the one before."""
+    return sum(len(json.dumps(record)) + 1 for record in records) + 200
 
 
 ONE = '11111111-1111-4111-8111-111111111111'
@@ -245,6 +255,18 @@ class Picking(unittest.TestCase):
         self.assertEqual(rows[2].strip(), 'keys, line 2: fault')
         self.assertEqual(rows[4], '   j  k  ↓  ↑' + ' ' * 4 + 'next or previous block')
 
+    def test_the_key_table_of_the_readme_holds_the_keys_of_the_help(self):
+        """A key that the help gains or loses fails here until the README
+        follows. The README spells three named keys in full."""
+        with open(os.path.join(os.path.dirname(HERE), 'README.md'), encoding='utf-8') as fp:
+            table = fp.read().split('| Key | Action |', 1)[1].split('\n\n', 1)[0]
+        spelled = {'S-Tab': 'Shift+Tab', 'C-d': 'Ctrl+D', 'C-u': 'Ctrl+U'}
+        helped = {spelled.get(key, key) for shown, _ in self.copy.helped(self.copy.LETTERS)
+                  for key in shown.split('  ') if key}
+        written = {key for row in table.splitlines()[2:]
+                   for key in re.findall(r'`([^`]+)`', row.split('|')[1])}
+        self.assertEqual(written, helped)
+
     def test_a_label_wider_than_its_column_pushes_the_text_of_the_help(self):
         keys, _, _ = self.keys('code-next = x\ncode-previous = y\n')
         self.assertIn('   x  y  Tab  S-Tab  next or previous block of code',
@@ -298,7 +320,7 @@ class Picking(unittest.TestCase):
                 claude('m4', text('a subagent'), isSidechain=True),
             ])
             book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
+        self.assertEqual(pairs(book),
                          [('first question', 'Found\n\nit.'),
                           ('second question', 'Here:\n\n```sh\nls\n```')])
         state = self.copy.opened(book)
@@ -318,8 +340,7 @@ class Picking(unittest.TestCase):
                 claude('m2', text('Fixed.')),
             ])
             book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [('fix the bug', 'Fixed.')])
+        self.assertEqual(pairs(book), [('fix the bug', 'Fixed.')])
 
     def test_a_turn_that_the_tail_cuts_keeps_its_answer(self):
         """One turn can write more than the tail, so its answer cannot wait for
@@ -330,9 +351,9 @@ class Picking(unittest.TestCase):
             path = os.path.join(room, 'session.jsonl')
             write_transcript(path, [user('first question'),
                                     claude('m1', text('x' * 400)), *kept])
-            self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
-            book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
+            with unittest.mock.patch.object(self.copy.sessions, 'FIND_WINDOW', window(kept)):
+                book = self.copy.pages(path)
+        self.assertEqual(pairs(book),
                          [(self.copy.CUT, 'After the cut.'), ('second question', 'Kept.')])
 
     def test_a_tail_inside_one_turn_still_gives_its_answer(self):
@@ -341,10 +362,9 @@ class Picking(unittest.TestCase):
             path = os.path.join(room, 'session.jsonl')
             write_transcript(path, [user('long task'),
                                     claude('m0', text('x' * 400)), *kept])
-            self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
-            book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [(self.copy.CUT, 'Done.')])
+            with unittest.mock.patch.object(self.copy.sessions, 'FIND_WINDOW', window(kept)):
+                book = self.copy.pages(path)
+        self.assertEqual(pairs(book), [(self.copy.CUT, 'Done.')])
         self.assertEqual(book[0]['every']['text'], 'Looking.\n\nDone.')
 
     def test_w_shows_every_message_of_the_turn_in_its_order(self):
@@ -548,8 +568,7 @@ class Picking(unittest.TestCase):
                 claude('m1', text('It passes.')),
             ])
             book = self.copy.pages(path)
-        self.assertEqual([(page['prompt'], page['text']) for page in book],
-                         [('! cd /tmp\npwd', 'It passes.')])
+        self.assertEqual(pairs(book), [('! cd /tmp\npwd', 'It passes.')])
 
     def test_code_in_bold_loses_its_backticks(self):
         self.assertEqual(self.copy.spans('**T1, the `!` mark** and more'),
@@ -731,7 +750,7 @@ class Picking(unittest.TestCase):
                 unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': room,
                                                       'HERDR_PANE_ID': shell}), \
                 stub_log() as log, contextlib.redirect_stdout(io.StringIO()) as said:
-            status = self.copy.launch(agent, 'make\033[201~\nls', '2 blocks', run=False)
+            status = self.copy.paste(agent, 'make\033[201~\nls', '2 blocks')
             asked = pathlib.Path(log).read_text()
         return status, said.getvalue(), asked, os.listdir(room)
 
@@ -851,8 +870,8 @@ class Running(unittest.TestCase):
 
         In the world, bash in w3:p2 and zsh in w3:p7 are at their prompt.
         w3:p5 is at its prompt too, with a line that the user is typing, and
-        w3:p8 runs fish, and w3:p9 dash. w3:p3 runs cargo, w3:p4 a shell in a
-        container, and w3:p6 a panel.
+        w3:p8 runs fish, w3:p9 dash, and w3:p10 a shell named sh. w3:p3 runs
+        cargo, w3:p4 a shell in a container, and w3:p6 a panel.
         """
         agent = {'pane_id': 'w3:p1', 'tab_id': 'w3:t1', 'agent': 'claude'}
         panes = [agent, *({'pane_id': shell, 'tab_id': tab} for shell in shells)]
@@ -889,6 +908,15 @@ class Running(unittest.TestCase):
         with self.assertRaisesRegex(self.running.NoRun,
                                     '^open bash or zsh in this tab: .* which fish '):
             self.free('w3:p8')
+
+    def test_a_shell_that_reads_no_bracketed_paste_takes_no_run(self):
+        """dash takes the paste markers as text, and keeps the heredoc open on
+        the line that should close it. A shell named sh may be dash."""
+        for shell, name in (('w3:p9', 'dash'), ('w3:p10', 'sh')):
+            with self.subTest(name), self.assertRaisesRegex(
+                    self.running.NoRun, f'^open bash or zsh in this tab: {name} may read no '
+                                        'bracketed paste, and the run would not start$'):
+                self.free(shell)
 
     def test_a_line_is_empty_when_it_ends_on_a_prompt(self):
         for screen in ('out\nuser@host:~/w$ \n\n', 'host% ', '❯ ', 'root@host:/# '):
@@ -1122,18 +1150,25 @@ class Waking(unittest.TestCase):
         """The shell closed, and took the run with it."""
         run = self.job('=== START 1', '=== END 1 rc=0', '=== START 2')
         gone = subprocess.Popen(['true'])
+        watched = self.waking.watch(gone.pid)
+        self.addCleanup(os.close, watched)
         gone.wait()
-        self.assertTrue(self.waking.end(run, gone.pid, '1')[1])
+        self.assertTrue(self.waking.end(run, watched)[1])
         _, prompts = self.deliver(run, cut=True)
         self.assertIn('Step 1 ended with rc=0, and the shell closed during step 2. The files',
                       prompts[0])
 
-    def test_a_pid_that_another_process_took_is_a_run_that_ended(self):
-        """A process that began at another tick is not the run."""
-        run = self.job('=== START 1')
-        self.assertIsNotNone(self.waking.born(os.getpid()))
-        self.assertTrue(self.waking.end(run, os.getpid(), 'another tick')[1])
-        self.assertFalse(self.waking.end(self.job(*self.FULL), os.getpid(), 'another tick')[1])
+    def test_a_run_alive_ends_at_its_last_mark_and_a_run_gone_at_once(self):
+        """A pid that no process holds is a run that ended before its waiter
+        could watch it."""
+        watched = self.waking.watch(os.getpid())
+        self.addCleanup(os.close, watched)
+        self.assertFalse(self.waking.exited(watched))
+        self.assertFalse(self.waking.end(self.job(*self.FULL), watched)[1])
+        gone = subprocess.Popen(['true'])
+        gone.wait()
+        self.assertIsNone(self.waking.watch(gone.pid))
+        self.assertTrue(self.waking.end(self.job('=== START 1'), None)[1])
 
     def test_an_agent_at_work_or_on_a_dialog_gets_the_wake_after(self):
         """A line typed during a turn waits behind it, and one typed under a
@@ -1149,7 +1184,7 @@ class Waking(unittest.TestCase):
     def test_a_box_out_of_sight_or_holding_a_line_waits(self):
         run = self.job(*self.FULL)
         for screen, why in (('  scrolled up, far from the box\n', 'is not on screen'),
-                            ('❯ half a sentence\n', 'holds a line')):
+                            ('❯ half a sentence\n', 'already holds a line')):
             with self.subTest(screen=screen):
                 said, prompts = self.deliver(run, screen=screen)
                 self.assertEqual(prompts, [])
@@ -1184,13 +1219,20 @@ class Waking(unittest.TestCase):
         self.assertEqual((said, prompts), ('the run has no step, and nothing to tell', []))
 
     def test_a_refused_prompt_is_tried_again(self):
-        """A dialog may open between the look at the box and the prompt, and
-        api.call answers agent_blocked as it answers a lost reply."""
+        """A dialog may open between the look at the box and the prompt."""
         errors = sys.modules['server'].ERRORS
         with unittest.mock.patch.dict(errors, {'agent.prompt': 'agent_blocked'}):
             said, prompts = self.deliver(self.job(*self.FULL))
         self.assertGreater(len(prompts), 1)
-        self.assertTrue(said.endswith(': the prompt was refused, or its reply lost'), said)
+        self.assertTrue(said.endswith(': the prompt was refused: agent_blocked'), said)
+
+    def test_a_lost_reply_is_tried_again(self):
+        """The prompt may have typed the wake, which then comes twice."""
+        writes = sys.modules['server'].WRITES
+        with unittest.mock.patch.dict(writes, {'agent.prompt': lambda params: {}}):
+            said, prompts = self.deliver(self.job(*self.FULL))
+        self.assertGreater(len(prompts), 1)
+        self.assertTrue(said.endswith(': the reply to the prompt was lost'), said)
 
     def test_two_runs_of_one_agent_wake_it_in_two_turns(self):
         """The first wake starts a turn, and a second one typed then would
@@ -1265,6 +1307,20 @@ class Waking(unittest.TestCase):
         self.assertTrue(said.endswith(' woke w2:p1\n'), said)
         self.assertIn('and the run is over. The shell closed during step 1. The files',
                       prompts[0])
+
+    def test_a_run_gone_before_its_waiter_starts_wakes_its_agent(self):
+        """The waiter starts, and tells the agent that the shell closed."""
+        run = self.job('=== START 1')
+        gone = subprocess.Popen(['true'])
+        gone.wait()
+        with stub_log() as log:
+            started = subprocess.run([sys.executable, os.path.join(BIN, 'waking.py'), run,
+                                      str(gone.pid)], check=False, timeout=10)
+            said = self.wait_for(run)
+            prompts = self.prompts(log)
+        self.assertEqual(started.returncode, 0)
+        self.assertTrue(said.endswith(' woke w2:p1\n'), said)
+        self.assertIn('The shell closed during step 1.', prompts[0])
 
 
 class Resolution(unittest.TestCase):

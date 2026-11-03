@@ -41,8 +41,8 @@ WAITER = (sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)
 # a last line that ends otherwise may hold a command that the user is typing,
 # and the run would join it
 PROMPT_ENDS = ('$', '#', '%', '>', '❯')
-# the shells that read the heredoc of a run
-SHELLS = ('bash', 'zsh', 'sh', 'dash', 'ksh', 'mksh', 'ash')
+# the shells that read both the heredoc and the paste of a run
+SHELLS = ('bash', 'zsh')
 # the shells whose line editor holds a bracketed paste until the Enter, by
 # default. Another shell, such as dash, takes each newline of a paste as an
 # Enter, and runs the lines of the code as they arrive.
@@ -147,9 +147,9 @@ def free_shell(panes, agent, standing, heredoc=True):
 
     It is a pane of the tab of the agent, with no agent, at its prompt: the
     one you stand in, else the first. Nothing runs before the Enter of the
-    user, so a shell that was not meant costs only a line to clear. A run is
-    a heredoc, which a POSIX shell reads, and code typed as it is needs a
-    shell that holds a paste until that Enter.
+    user, so a shell that was not meant costs only a line to clear. The code
+    goes out as a paste, which the shell must hold until that Enter, and a
+    run is also a heredoc, which fish does not read.
     """
     tab = [pane for pane in panes
            if pane.get('tab_id') == agent.get('tab_id') and not pane.get('agent')]
@@ -161,12 +161,16 @@ def free_shell(panes, agent, standing, heredoc=True):
     else:
         raise NoRun('open a shell in this tab, or wait for its command to end')
     name = shell_name(info)
-    if not heredoc and name not in PASTES:
-        raise NoRun(f"open bash, zsh or fish in this tab: {name or 'this shell'} "
+    called = name or 'this shell'
+    if heredoc and name not in PASTES:
+        raise NoRun(f'open bash or zsh in this tab: {called} may read no bracketed paste, '
+                    f'and the run would not start')
+    if name not in PASTES:
+        raise NoRun(f"open bash, zsh or fish in this tab: {called} "
                     f"would run each line of the code as it arrives")
     if heredoc and name not in SHELLS:
-        raise NoRun(f"open bash or zsh in this tab: a run is a heredoc, which "
-                    f"{name or 'this shell'} may not read")
+        raise NoRun(f'open bash or zsh in this tab: a run is a heredoc, which {called} '
+                    f'may not read')
     if not empty_line(prompting.screen(shell)):
         raise NoRun('clear the line of the free shell first: it does not end on a prompt')
     return shell, name

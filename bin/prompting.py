@@ -38,7 +38,7 @@ def target(panes, standing):
     A tab holds one agent and a few shells. One with two agents names one
     only when you stand in it: from a shell, either could be meant.
     """
-    here = next((pane for pane in panes if pane['pane_id'] == standing), None) \
+    here = api.pane(standing, panes) \
         or next((pane for pane in panes if pane.get('focused')), None)
     if not here:
         return None
@@ -59,6 +59,14 @@ def box(screen):
     boxes = [row.strip() for row in screen.splitlines()
              if row.strip().startswith(MARK)]
     return boxes[-1][len(MARK):].strip() if boxes else None
+
+
+def box_refusal(pane):
+    """Why the prompt box of that pane cannot take a line now, or None."""
+    held = box(screen(pane))
+    if held is None:
+        return 'the prompt box is not on screen'
+    return 'the prompt box already holds a line' if held else None
 
 
 def screen(pane):
