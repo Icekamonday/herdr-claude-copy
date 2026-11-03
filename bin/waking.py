@@ -179,9 +179,12 @@ def knock(pane, text):
     why = refusal(agent)
     if why:
         return None, why
-    prompted = api.call('agent', 'prompt', target=pane, text=text)
+    try:
+        prompted = api.request('agent', 'prompt', target=pane, text=text)
+    except api.Refused as why:
+        return None, f'the prompt was refused: {why}'
     if prompted.get('type') != 'agent_prompted':
-        return None, 'the prompt was refused, or its reply lost'
+        return None, 'the reply to the prompt was lost'
     started(pane)
     return f'woke {pane}', None
 
@@ -190,10 +193,9 @@ def deliver(run, found, cut, ended):
     """Type the wake into the box of the agent that the run names, once the box
     can take it, and say how the wait ended.
 
-    A refused prompt and a lost reply both come back empty from api.call, and
-    both are tried again. A refused one typed nothing. A lost one may have
-    typed the wake, which then comes twice: a double wake costs a turn, and a
-    lost one leaves Claude waiting.
+    A refused prompt and a lost reply are both tried again. A refused one
+    typed nothing. A lost one may have typed the wake, which then comes twice:
+    a double wake costs a turn, and a lost one leaves Claude waiting.
     """
     if not found['ends'] and not cut:
         return 'the run has no step, and nothing to tell'

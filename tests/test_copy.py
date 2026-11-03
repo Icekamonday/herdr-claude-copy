@@ -1193,13 +1193,20 @@ class Waking(unittest.TestCase):
         self.assertEqual((said, prompts), ('the run has no step, and nothing to tell', []))
 
     def test_a_refused_prompt_is_tried_again(self):
-        """A dialog may open between the look at the box and the prompt, and
-        api.call answers agent_blocked as it answers a lost reply."""
+        """A dialog may open between the look at the box and the prompt."""
         errors = sys.modules['server'].ERRORS
         with unittest.mock.patch.dict(errors, {'agent.prompt': 'agent_blocked'}):
             said, prompts = self.deliver(self.job(*self.FULL))
         self.assertGreater(len(prompts), 1)
-        self.assertTrue(said.endswith(': the prompt was refused, or its reply lost'), said)
+        self.assertTrue(said.endswith(': the prompt was refused: agent_blocked'), said)
+
+    def test_a_lost_reply_is_tried_again(self):
+        """The prompt may have typed the wake, which then comes twice."""
+        writes = sys.modules['server'].WRITES
+        with unittest.mock.patch.dict(writes, {'agent.prompt': lambda params: {}}):
+            said, prompts = self.deliver(self.job(*self.FULL))
+        self.assertGreater(len(prompts), 1)
+        self.assertTrue(said.endswith(': the reply to the prompt was lost'), said)
 
     def test_two_runs_of_one_agent_wake_it_in_two_turns(self):
         """The first wake starts a turn, and a second one typed then would

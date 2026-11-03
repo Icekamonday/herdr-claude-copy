@@ -18,11 +18,18 @@ TIMEOUT = 5
 MAX_REPLY = 1 << 20      # a pane list is a few KB; past this the peer is faulty
 
 
-def call(*words, **params):
-    """One request, by the words the CLI uses: call('pane', 'list').
+class Refused(Exception):
+    """The server refused a request, with the code of its error."""
+
+
+def request(*words, **params):
+    """One request, by the words the CLI uses: request('pane', 'list').
 
     The method name is those words joined, which is how the CLI spells them
     too, so a call site reads the same either way.
+
+    A refusal raises Refused, for a caller that must tell it from a lost
+    reply, which answers {}.
     """
     method = '.'.join(word.replace('-', '_') for word in words)
     try:
@@ -46,7 +53,21 @@ def call(*words, **params):
         answer = json.loads(reply.decode())
     except (ValueError, UnicodeDecodeError):
         return {}
-    return answer.get('result') or {} if isinstance(answer, dict) else {}
+    if not isinstance(answer, dict):
+        return {}
+    error = answer.get('error')
+    if error:
+        raise Refused(error.get('code') if isinstance(error, dict) else str(error))
+    return answer.get('result') or {}
+
+
+def call(*words, **params):
+    """As request, but a refusal answers {} as a lost reply does, so that a
+    caller that tests the reply never takes a refusal for a success."""
+    try:
+        return request(*words, **params)
+    except Refused:
+        return {}
 
 
 def panes(**params):
