@@ -52,6 +52,8 @@ The picker works with the keyboard alone, and a click does nothing.
 
 The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard write. The picker finds the session by the title of its pane, which Claude Code sets to the session name, then by the session id that Herdr holds. If the title names no session, the session id decides alone: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, for example, the pane keeps the title that the shell set. If neither works, name the session with `/rename`.
 
+The plugin doesn't need the Claude Code integration of Herdr. Without it, the picker finds a session by the title of its pane alone, and can miss a session that `/cd` moved to another project.
+
 ## Run the blocks in a shell of the tab
 
 The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt: the one you stand in, else the first.
@@ -97,12 +99,12 @@ If two runs of one Claude end together, the second wake waits for the turn that 
 To give an action another key, write one `action = key` line per binding in `~/.config/herdr-claude-copy/keys`, or in `$XDG_CONFIG_HOME/herdr-claude-copy/keys` if you set that variable:
 
 ```
-# the run on ù, the help on h
-run = ù
+# the paste on ù, the help on h
+paste = ù
 help = h
 ```
 
-A key is one printable character, such as `ù` in a UTF-8 terminal, and its case counts. It replaces the letter of the action: after `run = ù`, `*` does nothing. The named keys keep their action: the arrows, `Tab`, `Shift+Tab`, `Home`, `End`, the Page keys, `Enter`, `Esc`, `Space`, `Ctrl+D` and `Ctrl+U`. An action with no letter can take one beside its named keys. A line that starts with `#` is a comment, and `run = #` binds `#`.
+A key is one printable character, such as `ù` in a UTF-8 terminal, and its case counts. It replaces the letter of the action: after `paste = ù`, `v` does nothing. The named keys keep their action: the arrows, `Tab`, `Shift+Tab`, `Home`, `End`, the Page keys, `Enter`, `Esc`, `Space`, `Ctrl+D` and `Ctrl+U`. An action with no letter can take one beside its named keys. A line that starts with `#` is a comment, and `run = #` binds `#`.
 
 | Actions | Letters by default |
 |---|---|
