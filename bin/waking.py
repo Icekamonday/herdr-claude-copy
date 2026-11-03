@@ -146,12 +146,7 @@ def refusal(agent):
     status = agent.get('agent_status')
     if status in HELD:
         return f'the agent is {status}'
-    held = prompting.box(prompting.screen(agent))
-    if held is None:
-        return 'the prompt box is not on screen'
-    if held:
-        return 'the prompt box holds a line'
-    return None
+    return prompting.box_refusal(agent)
 
 
 def started(pane):

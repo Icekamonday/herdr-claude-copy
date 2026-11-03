@@ -1158,7 +1158,7 @@ class Waking(unittest.TestCase):
     def test_a_box_out_of_sight_or_holding_a_line_waits(self):
         run = self.job(*self.FULL)
         for screen, why in (('  scrolled up, far from the box\n', 'is not on screen'),
-                            ('❯ half a sentence\n', 'holds a line')):
+                            ('❯ half a sentence\n', 'already holds a line')):
             with self.subTest(screen=screen):
                 said, prompts = self.deliver(run, screen=screen)
                 self.assertEqual(prompts, [])

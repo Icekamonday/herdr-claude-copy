@@ -61,6 +61,14 @@ def box(screen):
     return boxes[-1][len(MARK):].strip() if boxes else None
 
 
+def box_refusal(pane):
+    """Why the prompt box of that pane cannot take a line now, or None."""
+    held = box(screen(pane))
+    if held is None:
+        return 'the prompt box is not on screen'
+    return 'the prompt box already holds a line' if held else None
+
+
 def screen(pane):
     read = api.call('pane', 'read', pane_id=pane['pane_id'],
                     source='visible').get('read') or {}

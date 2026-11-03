@@ -950,13 +950,10 @@ def place(agent, text):
     agent = api.pane(agent['pane_id']) or agent
     if agent.get('agent_status') == 'blocked':
         return 'the agent is waiting on a dialog'
-    held = prompting.box(prompting.screen(agent))
-    if held is None:
-        return 'the prompt box is not on screen'
-    if held:
-        return 'the prompt box already holds a line'
-    type_into(agent['pane_id'], CONTROLS.sub('', text))
-    return None
+    why = prompting.box_refusal(agent)
+    if not why:
+        type_into(agent['pane_id'], text)
+    return why
 
 
 def say(line):
