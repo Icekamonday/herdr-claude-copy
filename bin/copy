@@ -67,7 +67,6 @@ SHELL_INPUT = re.compile(r'<bash-input>(.*?)</bash-input>', re.DOTALL)
 OUTPUTS = ('<bash-stdout>', '<bash-stderr>', '<local-command-stdout>',
            '<local-command-stderr>')
 
-TAIL = 4 << 20      # a transcript can pass 40 MB, and the picker shows its last answers
 CUT = '(the prompt of this turn is too far back in the transcript)'
 GUTTER = 7          # the row number, the bar of the cursor, and a space each
 # the rule between two messages of a turn. Claude almost never writes a line
@@ -227,16 +226,10 @@ def answers(path):
     turn can write more than the tail holds. The first of them can lose its
     beginning.
     """
-    try:
-        with open(path, 'rb') as fp:
-            fp.seek(0, 2)
-            size = fp.tell()
-            fp.seek(max(0, size - TAIL))
-            lines = fp.readlines()
-    except (OSError, TypeError):
-        return []
+    read, cut = sessions.tail(path, sessions.FIND_WINDOW)
+    lines = read.split(b'\n')
     found, turn = [], None
-    if size > TAIL:
+    if cut:
         lines, turn = lines[1:], {'prompt': CUT, 'id': None, 'messages': []}
         found.append(turn)
     for raw in lines:

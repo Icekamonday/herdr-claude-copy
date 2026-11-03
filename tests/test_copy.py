@@ -109,6 +109,11 @@ def write_transcript(path, records):
         fp.writelines(json.dumps(record) + '\n' for record in records)
 
 
+def window(records):
+    """A tail that holds those records and the end of the one before."""
+    return sum(len(json.dumps(record)) + 1 for record in records) + 200
+
+
 ONE = '11111111-1111-4111-8111-111111111111'
 TWO = '22222222-2222-4222-8222-222222222222'
 
@@ -330,8 +335,8 @@ class Picking(unittest.TestCase):
             path = os.path.join(room, 'session.jsonl')
             write_transcript(path, [user('first question'),
                                     claude('m1', text('x' * 400)), *kept])
-            self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
-            book = self.copy.pages(path)
+            with unittest.mock.patch.object(self.copy.sessions, 'FIND_WINDOW', window(kept)):
+                book = self.copy.pages(path)
         self.assertEqual([(page['prompt'], page['text']) for page in book],
                          [(self.copy.CUT, 'After the cut.'), ('second question', 'Kept.')])
 
@@ -341,8 +346,8 @@ class Picking(unittest.TestCase):
             path = os.path.join(room, 'session.jsonl')
             write_transcript(path, [user('long task'),
                                     claude('m0', text('x' * 400)), *kept])
-            self.copy.TAIL = sum(len(json.dumps(record)) + 1 for record in kept) + 200
-            book = self.copy.pages(path)
+            with unittest.mock.patch.object(self.copy.sessions, 'FIND_WINDOW', window(kept)):
+                book = self.copy.pages(path)
         self.assertEqual([(page['prompt'], page['text']) for page in book],
                          [(self.copy.CUT, 'Done.')])
         self.assertEqual(book[0]['every']['text'], 'Looking.\n\nDone.')
