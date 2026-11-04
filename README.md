@@ -96,7 +96,7 @@ Herdr doesn't report where the cursor is, so the picker reads the last line on t
 
 When the run is over, Claude hears of it: a waiter types into Claude's prompt box how each step ended and where its files are, and sends it. The run is over after its last step, after a `Ctrl+C`, or when its shell closes. The run starts the waiter before its first step, in a session of its own, so the waiter outlives both a `Ctrl+C` and the shell.
 
-The waiter types only into a box that can take a line. Claude must not be working or waiting on a dialog, and the box must be on screen and empty. The waiter reads the pane of Claude even when its tab isn't displayed, so you can switch to another space during the run. If the box can't take the line, the waiter looks again every 2 seconds. It gives up 24 hours after the end of the run, or when the pane of Claude closes or no longer runs Claude. To cancel a wake, create the file `no-wake` in the directory of the run: the run shows the command when it ends. `wake.log` says how the wake went.
+The waiter types only into a box that can take a line. Claude must not be working or waiting on a dialog, and the box must be on screen and empty. A prompt suggestion of Claude Code counts as empty. The waiter reads the pane of Claude even when its tab isn't displayed, so you can switch to another space during the run. If the box can't take the line, the waiter looks again every 2 seconds. It gives up 24 hours after the end of the run, or when the pane of Claude closes or no longer runs Claude. To cancel a wake, create the file `no-wake` in the directory of the run: the run shows the command when it ends. `wake.log` says how the wake went.
 
 If two runs of one Claude end together, the second wake waits for the turn that the first one starts. For that, each waiter takes a lock on the pane of Claude: an empty file `wake-<pane id>.lock` in `~/.local/state/herdr-claude-copy/`, next to `runs/`. These files are harmless, and you can delete them when no run is waiting.
 
@@ -142,7 +142,7 @@ Each line adds to the host directory, and never replaces it. The optional second
 
 ## Security
 
-- The `!` key puts the code in Claude's prompt box and sends no Enter. When you press Enter, Claude Code runs the text in a shell with your rights, so read it first. The picker removes control characters from the text, so an answer can't end the paste early and send a line.
+- The `!` key puts the code in Claude's prompt box and sends no Enter. It refuses a box that holds a typed line, and replaces a prompt suggestion of Claude Code, the grey text that typing dismisses. When you press Enter, Claude Code runs the text in a shell with your rights, so read it first. The picker removes control characters from the text, so an answer can't end the paste early and send a line.
 - The `*` key puts the code in a shell and sends no Enter. When you press Enter, the shell runs the blocks with your rights, so read them first. The picker removes control characters from the blocks, as for the `!` key.
 - The `v` key puts the code in bash, zsh or fish and sends no Enter, without the control characters. When you press Enter, the shell runs the code with your rights, so read it first. If bracketed paste is off in that shell, each line runs as it arrives.
 - The wake that the waiter types into Claude's prompt box holds the name of the run, the status of each step and the directory of the run. It never holds what a step wrote.

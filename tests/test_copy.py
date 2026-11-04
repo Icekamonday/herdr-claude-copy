@@ -119,6 +119,14 @@ def window(records):
     return sum(len(json.dumps(record)) + 1 for record in records) + 200
 
 
+def prompt_box(state):
+    """The foot of a Claude pane with its styles, as Herdr reads it, when the
+    box holds a suggestion, a typed line, a paste or a command in shell mode.
+    The state 'sent' is the row of a message already sent."""
+    with open(os.path.join(HERE, 'fixtures', 'prompt-box.json')) as fp:
+        return json.load(fp)[state]
+
+
 ONE = '11111111-1111-4111-8111-111111111111'
 TWO = '22222222-2222-4222-8222-222222222222'
 
@@ -704,6 +712,19 @@ class Picking(unittest.TestCase):
         self.assertEqual(why, 'the prompt box is not on screen')
         self.assertNotIn('send_text', asked)
 
+    def test_a_command_for_claude_replaces_a_suggestion_and_not_a_typed_line(self):
+        """A paste dismisses the suggestion, as typing does."""
+        agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
+        screens = sys.modules['server'].WORLD['screens']
+        for state, why in (('suggestion', None),
+                           ('typed', 'the prompt box already holds a line')):
+            with self.subTest(state=state), \
+                    unittest.mock.patch.dict(screens, {'w2:p1': prompt_box(state)}), \
+                    stub_log() as log:
+                self.assertEqual(self.copy.place(agent, '!ls'), why)
+                self.assertEqual('pane.send_text w2:p1' in pathlib.Path(log).read_text(),
+                                 why is None)
+
     def test_a_run_goes_to_the_free_shell_of_the_tab_without_an_enter(self):
         """The shell shows the blocks that the Enter of the user will run, and
         an end marker in a block cannot close the paste early."""
@@ -811,6 +832,27 @@ class PromptBox(unittest.TestCase):
         self.assertEqual(self.prompting.box(self.screen('\u276f')), '')
         self.assertEqual(self.prompting.box(self.screen('\u276f half a question')),
                          'half a question')
+
+    def test_a_suggestion_in_the_box_is_no_line(self):
+        """Claude Code draws its suggestion dim, and draws a typed line, a paste
+        or a message already sent with no dim."""
+        box = self.prompting.box
+        self.assertEqual(box(prompt_box('suggestion')), '')
+        self.assertEqual(box(prompt_box('typed')), 'hello')
+        self.assertEqual(box(prompt_box('pasted')), '[Pasted text #16 +10 lines]')
+        # the box opens on a ! in shell mode, so the lowest mark is a message
+        self.assertEqual(box(prompt_box('sent') + '\n' + prompt_box('shell mode')),
+                         '/config')
+
+    def test_only_the_dim_characters_of_the_box_are_no_line(self):
+        """A dim tail leaves the line typed before it, and the 2 of a true color
+        is no dim."""
+        box = self.prompting.box
+        self.assertEqual(box('\u276f hello \033[2mworld\033[0m'), 'hello')
+        self.assertEqual(box('\u276f \033[38;2;153;153;153mhello\033[0m'), 'hello')
+        self.assertEqual(box('\u276f \033[2ma\033[22mb\033[0m'), 'b')
+        self.assertEqual(box('\u276f \033[1;2mbold and dim\033[m'), '')
+        self.assertEqual(box('\033[2m\u276f a suggestion\033[0m'), '')
 
     def test_a_popup_stands_in_the_pane_under_it(self):
         context = {'HERDR_PANE_ID': 'w1:p9',
@@ -1189,6 +1231,14 @@ class Waking(unittest.TestCase):
                 said, prompts = self.deliver(run, screen=screen)
                 self.assertEqual(prompts, [])
                 self.assertTrue(said.endswith(why), said)
+
+    def test_a_suggestion_in_the_box_lets_the_wake_in_and_a_typed_line_holds_it(self):
+        run = self.job(*self.FULL)
+        said, prompts = self.deliver(run, screen=prompt_box('typed'))
+        self.assertEqual(prompts, [])
+        self.assertTrue(said.endswith('already holds a line'), said)
+        said, prompts = self.deliver(run, screen=prompt_box('suggestion'))
+        self.assertEqual((said, len(prompts)), ('woke w2:p1', 1))
 
     def test_a_run_whose_agent_is_gone_wakes_nobody(self):
         """The idle agent of the same tab is not the one the run names."""
