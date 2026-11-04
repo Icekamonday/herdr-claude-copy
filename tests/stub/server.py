@@ -9,6 +9,7 @@ that it started.
 
 import json
 import os
+import re
 import socket
 import threading
 
@@ -26,11 +27,21 @@ def titled(panes):
             if pane['pane_id'] in TITLES else pane for pane in panes]
 
 
+ESCAPES = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\r')
+
+
+def screen(params):
+    """A screen of the world keeps its styles, as Herdr does, and a read gets
+    them only when it asks for them."""
+    text = WORLD['screens'].get(params.get('pane_id'), '')
+    if params.get('format') != 'ansi' or params.get('strip_ansi', True):
+        text = ESCAPES.sub('', text)
+    return {'read': {'pane_id': params.get('pane_id'), 'text': text}, 'type': 'pane_read'}
+
+
 READS = {
     'pane.list': lambda p: {'panes': titled(WORLD['panes']), 'type': 'pane_list'},
-    'pane.read': lambda p: {'read': {'pane_id': p.get('pane_id'),
-                                     'text': WORLD['screens'].get(p.get('pane_id'), '')},
-                            'type': 'pane_read'},
+    'pane.read': screen,
     'pane.process_info': lambda p: {
         'process_info': dict(WORLD['processes'].get(p.get('pane_id'), {}),
                              pane_id=p.get('pane_id'))},
