@@ -2,6 +2,10 @@
 
 A Herdr plugin that copies the blocks of Claude Code's answers as Claude wrote them, or puts their commands in Claude's prompt box or in a shell of the tab.
 
+![The picker copies the code blocks of an answer, then puts them in Claude's prompt box](docs/demo-copy.gif)
+
+In this demo, `c` marks the three code blocks of the answer. `Enter` copies them, and a paste into the shell beside Claude shows them with no indent. Then `!` puts them in Claude's prompt box, behind one `!`.
+
 A mouse copy takes the screen grid. Claude Code draws a code block two columns in and wraps it at the width of the pane, so the copy keeps that indent and a break in each long line. The picker reads the answers from the session's transcript instead.
 
 ## Requirements
@@ -55,6 +59,8 @@ The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard writ
 The plugin doesn't need the Claude Code integration of Herdr. Without it, the picker finds a session by the title of its pane alone, and can miss a session that `/cd` moved to another project.
 
 ## Run the blocks in a shell of the tab
+
+![Two blocks run in the shell beside Claude, and Claude hears of the run](docs/demo-run.gif)
 
 The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt: the one you stand in, else the first.
 
