@@ -31,7 +31,7 @@ The demo is two short recordings of the picker, on a Herdr of its own. The first
 
    `stty size` must answer `32 128`.
 
-4. Start Herdr with `herdr`. In its shell, install the plugin and the `prefix+y` key:
+4. Start Herdr with `herdr`. In its shell, install the plugin and the `prefix+y` key, and turn on the toasts of Herdr, which are off by default:
 
    ```sh
    herdr plugin install Icekamonday/herdr-claude-copy &&
@@ -42,6 +42,9 @@ The demo is two short recordings of the picker, on a Herdr of its own. The first
    type = "shell"
    command = "herdr plugin action invoke pick --plugin herdr-claude-copy"
    description = "copy a block of Claude's last answers"
+
+   [ui.toast]
+   delivery = "herdr"
    EOF
    herdr server reload-config
    ```

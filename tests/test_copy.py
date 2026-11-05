@@ -22,6 +22,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import termios
+import threading
 import time
 import unittest
 import unittest.mock
@@ -831,6 +833,80 @@ class Picking(unittest.TestCase):
         self.copy.clip('make -j8\n  ls', terminal)
         self.assertEqual(terminal.getvalue(),
                          '\033]52;c;bWFrZSAtajgKICBscw==\a')
+
+    def toast(self, refused=False, reply=None):
+        """A line said with that reply of Herdr to its toast: how the popup was
+        held, and what the log of the picker holds after."""
+        room = tempfile.mkdtemp(prefix='herdr-toast-')
+        self.addCleanup(shutil.rmtree, room)
+        answer = {} if reply is None else {'notification.show': lambda p: reply}
+        with unittest.mock.patch.dict(sys.modules['server'].WRITES, answer), \
+                unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': room}), \
+                unittest.mock.patch.object(self.copy, 'hold') as hold, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.copy.say('copied 1 block, 1 line', refused=refused)
+        log = pathlib.Path(room, 'herdr-claude-copy', 'picker.log')
+        return hold.call_args_list, log.read_text() if log.exists() else None
+
+    def test_a_toast_shown_holds_nothing_and_logs_nothing(self):
+        self.assertEqual(self.toast(), ([], None))
+
+    def test_a_toast_not_shown_keeps_the_line_and_logs_why(self):
+        """A refusal waits for a key, and a line of a key that went waits a
+        second at most."""
+        hidden = {'type': 'notification_show', 'shown': False, 'reason': 'disabled'}
+        for refused, wait in ((True, None), (False, 1)):
+            with self.subTest(refused=refused):
+                held, log = self.toast(refused, hidden)
+                self.assertEqual(held, [unittest.mock.call(wait)])
+                self.assertRegex(log, r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d disabled: '
+                                      r'copied 1 block, 1 line\n$')
+
+    def test_a_toast_refused_logs_the_code_of_herdr(self):
+        errors = sys.modules['server'].ERRORS
+        with unittest.mock.patch.dict(errors, {'notification.show': 'method_not_found'}):
+            held, log = self.toast()
+        self.assertEqual(held, [unittest.mock.call(1)])
+        self.assertIn(' refused: method_not_found: copied 1 block, 1 line', log)
+
+    def test_with_no_toast_a_refusal_waits_for_a_key_and_a_run_typed_a_second(self):
+        """The shell of the first tab is running make, and the second tab has a
+        free shell."""
+        hidden = {'notification.show': lambda p: {'type': 'notification_show',
+                                                  'shown': False, 'reason': 'disabled'}}
+        room = tempfile.mkdtemp(prefix='herdr-toast-')
+        self.addCleanup(shutil.rmtree, room)
+        for tab, status, wait in (('w1', 1, None), ('w2', 0, 1)):
+            agent = {'pane_id': f'{tab}:p1', 'tab_id': f'{tab}:t1'}
+            with self.subTest(tab), \
+                    unittest.mock.patch.dict(sys.modules['server'].WRITES, hidden), \
+                    unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': room}), \
+                    unittest.mock.patch.object(self.copy, 'hold') as hold, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(self.copy.launch(agent, ['ls'], 'the sh block'), status)
+                self.assertEqual(hold.call_args_list, [unittest.mock.call(wait)])
+
+    def test_a_toast_with_no_reply_was_not_shown(self):
+        held, log = self.toast(reply={})
+        self.assertEqual(held, [unittest.mock.call(1)])
+        self.assertIn(' no reply: copied 1 block, 1 line', log)
+
+    def test_the_popup_holds_until_a_key_or_for_its_time(self):
+        """The terminal gets its mode back after the wait."""
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        with open(slave) as terminal, \
+                unittest.mock.patch.object(sys, 'stdin', terminal), \
+                unittest.mock.patch.object(sys, 'stdout', terminal):
+            mode = termios.tcgetattr(slave)
+            start = time.monotonic()
+            self.copy.hold(0.1)
+            self.assertGreaterEqual(time.monotonic() - start, 0.1)
+            threading.Timer(0.05, os.write, (master, b'q')).start()
+            start = time.monotonic()
+            self.copy.hold(5)
+            self.assertLess(time.monotonic() - start, 2)
+            self.assertEqual(termios.tcgetattr(slave), mode)
 
 
 class PromptBox(unittest.TestCase):

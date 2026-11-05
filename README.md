@@ -10,7 +10,7 @@ A mouse copy takes the screen grid. Claude Code draws a code block two columns i
 
 ## Requirements
 
-- Herdr 0.9.0 or later, on Linux. The wake of a run needs Linux 5.3 or later. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
+- Herdr 0.9.0 or later, on Linux. The wake of a run needs Linux 5.3 or later. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only. So was the reply of Herdr to a toast, which tells the picker whether the toast showed.
 - Python 3.10 or later at `/usr/bin/python3`, with no other package. If Pygments is installed for that Python, the picker colours the code.
 - `script` of util-linux, for the `*` key.
 
@@ -31,6 +31,8 @@ description = "copy a block of Claude's last answers"
 ```
 
 Then reload the configuration with `herdr server reload-config`.
+
+The picker says what it did in a Herdr toast, which shows only with `delivery = "herdr"` under `[ui.toast]` in the same file. If Herdr shows no toast, the popup keeps the line on screen for a second, or until you press a key after a refusal. `~/.local/state/herdr-claude-copy/picker.log` says why the toast didn't show.
 
 ## Use
 
