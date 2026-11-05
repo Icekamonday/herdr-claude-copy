@@ -122,7 +122,7 @@ def window(records):
 def prompt_box(state):
     """The foot of a Claude pane with its styles, as Herdr reads it, when the
     box holds a suggestion, a typed line, a paste or a command in shell mode.
-    The state 'sent' is the row of a message already sent."""
+    Each state whose name opens on 'sent' is the row of a message already sent."""
     with open(os.path.join(HERE, 'fixtures', 'prompt-box.json')) as fp:
         return json.load(fp)[state]
 
@@ -713,6 +713,16 @@ class Picking(unittest.TestCase):
         self.assertEqual(why, 'the prompt box is not on screen')
         self.assertNotIn('send_text', asked)
 
+    def test_a_box_scrolled_away_is_not_on_screen_though_sent_messages_are(self):
+        """A screen may mix two themes of Claude Code: a message keeps the
+        background that it was drawn with."""
+        agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
+        screens = sys.modules['server'].WORLD['screens']
+        scrolled = prompt_box('sent') + '\n' + prompt_box('sent in the light theme')
+        with unittest.mock.patch.dict(screens, {'w2:p1': scrolled}), stub_log() as log:
+            self.assertEqual(self.copy.place(agent, '!ls'), 'the prompt box is not on screen')
+            self.assertNotIn('send_text', pathlib.Path(log).read_text())
+
     def test_a_command_for_claude_replaces_a_suggestion_and_not_a_typed_line(self):
         """A paste dismisses the suggestion, as typing does."""
         agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
@@ -835,15 +845,31 @@ class PromptBox(unittest.TestCase):
                          'half a question')
 
     def test_a_suggestion_in_the_box_is_no_line(self):
-        """Claude Code draws its suggestion dim, and draws a typed line, a paste
-        or a message already sent with no dim."""
+        """Claude Code draws its suggestion dim, and draws a typed line or a
+        paste with no dim."""
         box = self.prompting.box
         self.assertEqual(box(prompt_box('suggestion')), '')
         self.assertEqual(box(prompt_box('typed')), 'hello')
         self.assertEqual(box(prompt_box('pasted')), '[Pasted text #16 +10 lines]')
-        # the box opens on a ! in shell mode, so the lowest mark is a message
-        self.assertEqual(box(prompt_box('sent') + '\n' + prompt_box('shell mode')),
-                         '/config')
+
+    def test_a_message_sent_on_a_background_is_no_box(self):
+        """Claude draws a message already sent on a background, in every theme
+        of Claude Code, so a screen scrolled up past the box shows no box."""
+        box = self.prompting.box
+        for sent in ('sent', 'sent in the light theme'):
+            with self.subTest(sent):
+                self.assertIsNone(box(prompt_box(sent)))
+                self.assertEqual(box(prompt_box(sent) + '\n' + prompt_box('typed')), 'hello')
+
+    def test_a_background_lasts_until_a_reset(self):
+        """The 48 among the values of a color is no background."""
+        box = self.prompting.box
+        self.assertIsNone(box('\033[44m❯ sent\033[0m'))
+        self.assertIsNone(box('\033[100m❯ sent'))
+        self.assertIsNone(box('\033[48;5;236m❯ sent'))
+        self.assertEqual(box('\033[48;2;55;55;55m\033[49m❯ typed'), 'typed')
+        self.assertEqual(box('\033[48;2;55;55;55m\033[0m❯ typed'), 'typed')
+        self.assertEqual(box('\033[38;2;48;48;48m❯ typed'), 'typed')
 
     def test_only_the_dim_characters_of_the_box_are_no_line(self):
         """A dim tail leaves the line typed before it, and the 2 of a true color
