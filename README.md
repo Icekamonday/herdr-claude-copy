@@ -62,9 +62,9 @@ The plugin doesn't need the Claude Code integration of Herdr. Without it, the pi
 
 ![Two blocks run in the shell beside Claude, and Claude hears of the run](docs/demo-run.gif)
 
-The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt: the one you stand in, else the first.
+The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt with nothing typed: the one you stand in, else the first.
 
-The `v` key puts the code that `$` copies in the free shell as it is, and sends no Enter either. It starts no run: no step, no log, and no wake of Claude. It refuses a busy shell or a typed line as `*` does, and takes only bash, zsh or fish. Their line editors hold a bracketed paste until your Enter. Another shell, such as dash, takes each newline of the paste as an Enter and runs the lines as they arrive. Bash does the same if you turned bracketed paste off: use `$` there instead.
+The `v` key puts the code that `$` copies in the free shell as it is, and sends no Enter either. It starts no run: no step, no log, and no wake of Claude. It skips a busy shell or a typed line as `*` does, and takes only bash, zsh or fish. Their line editors hold a bracketed paste until your Enter. Another shell, such as dash, takes each newline of the paste as an Enter and runs the lines as they arrive. Bash does the same if you turned bracketed paste off: use `$` there instead.
 
 The shell shows the blocks as they will run, behind the script of the run:
 
@@ -92,7 +92,7 @@ A tool that writes its own log can write it into `$STEP_DIR`. A step that fails 
 
 The run is a heredoc, and it goes out as a bracketed paste, as for the `!` key. So the key takes only bash or zsh. Fish reads no heredoc. Dash and the other shells read no bracketed paste: they take its markers as text, and the run wouldn't start. The key refuses a shell named `sh` too, since that name doesn't tell dash from bash. Bash 5.1 and zsh turn bracketed paste on by default. If your shell has it off, nothing runs before your Enter either, but you can't edit the lines, and a tab in a block triggers completion.
 
-Herdr doesn't report where the cursor is, so the picker reads the last line on the screen of the shell. If that line doesn't end with `$`, `#`, `%`, `>` or `❯`, you may be typing a command there, and the key does nothing but say so. If your prompt ends with another character, or shows text on its right, the key refuses every time.
+Herdr doesn't report where the cursor is, so the picker reads the last line on the screen of the shell. If that line doesn't end with `$`, `#`, `%`, `>` or `❯`, you may be typing a command there, and the key tries the next free shell. It never skips the shell you stand in: there, or when no other shell is free, it does nothing and names the pane to clear. If your prompt ends with another character, or shows text on its right, the key never takes that shell.
 
 When the run is over, Claude hears of it: a waiter types into Claude's prompt box how each step ended and where its files are, and sends it. The run is over after its last step, after a `Ctrl+C`, or when its shell closes. The run starts the waiter before its first step, in a session of its own, so the waiter outlives both a `Ctrl+C` and the shell.
 

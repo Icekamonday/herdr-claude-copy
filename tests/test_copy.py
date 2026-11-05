@@ -787,7 +787,7 @@ class Picking(unittest.TestCase):
     def test_v_refuses_a_busy_shell_and_a_line_being_typed(self):
         """w1:p2 runs make, and w3:p5 holds a line after its prompt."""
         for shell, why in (('w1:p2', 'open a shell in this tab, or wait for its command to end'),
-                           ('w3:p5', 'clear the line of the free shell first: it does not '
+                           ('w3:p5', 'clear the line of pane w3:p5 (zsh) first: it does not '
                                      + 'end on a prompt')):
             status, said, asked, _ = self.paste(shell)
             self.assertEqual((status, said), (1, why + '\n'))
@@ -908,17 +908,18 @@ class Running(unittest.TestCase):
         waiter.start()
         self.addCleanup(waiter.stop)
 
-    def free(self, *shells, standing=None, tab='w3:t1'):
+    def free(self, *shells, standing=None, tab='w3:t1', heredoc=True):
         """The free shell among these panes, in a tab beside the agent w3:p1.
 
         In the world, bash in w3:p2 and zsh in w3:p7 are at their prompt.
-        w3:p5 is at its prompt too, with a line that the user is typing, and
-        w3:p8 runs fish, w3:p9 dash, and w3:p10 a shell named sh. w3:p3 runs
-        cargo, w3:p4 a shell in a container, and w3:p6 a panel.
+        zsh in w3:p5 and bash in w3:p11 are at their prompt too, each with a
+        line that the user is typing. w3:p8 runs fish, w3:p9 dash, and w3:p10
+        a shell named sh. w3:p3 runs cargo, w3:p4 a shell in a container, and
+        w3:p6 a panel.
         """
         agent = {'pane_id': 'w3:p1', 'tab_id': 'w3:t1', 'agent': 'claude'}
         panes = [agent, *({'pane_id': shell, 'tab_id': tab} for shell in shells)]
-        return self.running.free_shell(panes, agent, standing)[0]['pane_id']
+        return self.running.free_shell(panes, agent, standing, heredoc)[0]['pane_id']
 
     def test_a_shell_is_free_when_it_has_the_terminal_back(self):
         """A server that reports no process gives no free shell."""
@@ -942,10 +943,35 @@ class Running(unittest.TestCase):
         self.assertEqual(self.free('w3:p2', 'w3:p7'), 'w3:p2')
         self.assertEqual(self.free('w3:p2', 'w3:p7', standing='w3:p7'), 'w3:p7')
 
-    def test_a_shell_with_a_line_typed_takes_no_run(self):
+    def test_a_shell_with_a_line_typed_takes_no_run_and_is_named(self):
         with self.assertRaisesRegex(self.running.NoRun,
-                                    '^clear the line of the free shell first'):
+                                    r'^clear the line of pane w3:p5 \(zsh\) first: it does '
+                                    'not end on a prompt$'):
             self.free('w3:p5')
+
+    def test_the_run_skips_a_shell_with_a_line_typed_for_the_next_free_one(self):
+        self.assertEqual(self.free('w3:p5', 'w3:p3', 'w3:p2'), 'w3:p2')
+
+    def test_the_shell_you_stand_in_is_never_skipped(self):
+        """A line typed there refuses the run, though another shell is free."""
+        with self.assertRaisesRegex(self.running.NoRun, r'^clear the line of pane w3:p5 '):
+            self.free('w3:p2', 'w3:p5', standing='w3:p5')
+
+    def test_of_two_shells_with_a_line_typed_the_refusal_names_the_first(self):
+        for shells, first in ((('w3:p5', 'w3:p11'), r'w3:p5 \(zsh\)'),
+                              (('w3:p11', 'w3:p5'), r'w3:p11 \(bash\)')):
+            with self.subTest(first), self.assertRaisesRegex(
+                    self.running.NoRun, f'^clear the line of pane {first} first'):
+                self.free(*shells)
+
+    def test_a_line_typed_is_named_before_a_next_shell_that_cannot_take_the_code(self):
+        """Clearing the line lets the code go, where the next shell refuses it:
+        dash for v, fish and sh for a run."""
+        for shells, heredoc in ((('w3:p11', 'w3:p9'), False), (('w3:p11', 'w3:p8'), True),
+                                (('w3:p11', 'w3:p10'), True)):
+            with self.subTest(shells), self.assertRaisesRegex(
+                    self.running.NoRun, r'^clear the line of pane w3:p11 \(bash\) first'):
+                self.free(*shells, heredoc=heredoc)
 
     def test_a_shell_that_reads_no_heredoc_takes_no_run(self):
         with self.assertRaisesRegex(self.running.NoRun,
