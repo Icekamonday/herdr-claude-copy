@@ -1527,6 +1527,17 @@ class Finding(unittest.TestCase):
         with self.assertRaisesRegex(self.store.NoTranscript, '^name this session with /rename'):
             self.find('claude')
 
+    def test_the_refusal_offers_rename_where_the_cwd_has_a_project(self):
+        """Without a project for its cwd, the session cannot run on the host."""
+        self.transcript(ONE, titled('build'))
+        sources = re.escape(self.store.sources_file())
+        either = f'name this session with /rename, or add its projects directory to {sources}'
+        only = f'add the projects directory of this session to {sources}'
+        for cwd, advice in (('/w/app/src', either), ('/x', only)):
+            with self.subTest(cwd), self.assertRaisesRegex(
+                    self.store.NoTranscript, f'^{advice}: no transcript carries its name$'):
+                self.find('deploy', cwd=cwd)
+
     def test_a_forged_transcript_path_is_not_followed(self):
         """The finder keeps the project and the file, and joins them to its root."""
         forged = self.transcript(ONE, titled('build'), root=os.path.join(self.room, 'forged'))
@@ -1552,7 +1563,7 @@ class Finding(unittest.TestCase):
         self.payload(ONE, 'deploy', os.path.join(self.root, '-w-app', f'{TWO}.jsonl'))
         for title in ('build', 'deploy'):
             with self.subTest(title), \
-                    self.assertRaisesRegex(self.store.NoTranscript, '^add the projects directory'):
+                    self.assertRaisesRegex(self.store.NoTranscript, 'carries its name$'):
                 self.find(title)
 
     def test_an_old_transcript_of_the_project_is_not_taken(self):

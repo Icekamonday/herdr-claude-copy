@@ -249,21 +249,29 @@ def _by_identity(root, cwd, sid, strays):
                 None)
 
 
-def _recent(root, cwd):
-    """The transcripts of the project of a cwd, written in the last day, as
-    (written, project directory, session id).
+def _nearest(root, cwd):
+    """The project directory of a cwd under a root, or None.
 
     A cwd without a project takes that of its nearest parent, as `devcontainer
-    exec` starts Claude at the top of the workspace. Only the dates are read:
-    a project can hold hundreds of transcripts.
+    exec` starts Claude at the top of the workspace.
     """
     here = cwd or ''
     while here and not os.path.isdir(os.path.join(root, project(here))):
         parent = os.path.dirname(here)
         here = parent if parent != here else ''
-    if not here:
+    return project(here) if here else None
+
+
+def _recent(root, cwd):
+    """The transcripts of the project of a cwd, written in the last day, as
+    (written, project directory, session id).
+
+    Only the dates are read: a project can hold hundreds of transcripts.
+    """
+    folder = _nearest(root, cwd)
+    if not folder:
         return []
-    folder, since, found = project(here), time.time() - RENAMED_WITHIN, []
+    since, found = time.time() - RENAMED_WITHIN, []
     try:
         entries = list(os.scandir(os.path.join(root, folder)))
     except OSError:
@@ -334,6 +342,11 @@ def find(pane, panes):
     if strays:
         path, root = strays[0]
         raise NoTranscript(f'check {path}: it resolves outside {root}')
-    raise NoTranscript(f'add the projects directory of this session to {sources_file()}: '
-                       f'no transcript carries its {"name" if title else "id"}')
+    why = f'no transcript carries its {"name" if title else "id"}'
+    # with a project for its cwd, the session may run on the host or in a container
+    if any(_nearest(root, pane.get('cwd')) for root, _ in places):
+        advice = 'name this session with /rename, or add its projects directory to'
+    else:
+        advice = 'add the projects directory of this session to'
+    raise NoTranscript(f'{advice} {sources_file()}: {why}')
 
