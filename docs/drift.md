@@ -4,7 +4,7 @@ This plugin comes from a private set of Herdr scripts. That setup will install t
 
 ## The title rule
 
-`bin/sessions.py` decides which Claude session a pane runs: `_title` with its `TRANSIENT` titles, `_names`, `_named`, and the title and identity keys of `resolve_all`. The private setup keeps the same rule for its status panel and its sidebar. It also keeps a third key, the working directory, which the picker refuses.
+`bin/sessions.py` decides which Claude session a pane runs: `_title` with its `TRANSIENT` titles, `_names`, `_named`, and the title and identity keys of `resolve_all`. The private setup keeps the same rule for its status panel and its sidebar. It also keeps a third key, the working directory, which the picker takes only for a session with no name.
 
 If Claude Code changes how it titles a pane, for example with a new transient title, change both copies.
 

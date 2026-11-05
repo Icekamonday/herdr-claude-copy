@@ -54,7 +54,7 @@ Press `prefix+y` in a tab that runs Claude Code. The picker opens on the last an
 
 The picker works with the keyboard alone, and a click does nothing.
 
-The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard write. The picker finds the session by the title of its pane, which Claude Code sets to the session name, then by the session id that Herdr holds. If the title names no session, the session id decides alone: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, for example, the pane keeps the title that the shell set. If neither works, name the session with `/rename`.
+The copy goes out as an OSC 52 sequence, which Herdr turns into a clipboard write. The picker finds the session by the title of its pane, which Claude Code sets to the session name, then by the session id that Herdr holds. If the title names no session, the session id decides alone: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, for example, the pane keeps the title that the shell set. Claude Code names a session only after a prompt that you type, so a session that another session prompts keeps the title "Claude Code". If Herdr holds no session id for it, the picker takes the only transcript of the project that has no name and changed in the last day. If nothing works, name the session with `/rename`.
 
 The plugin doesn't need the Claude Code integration of Herdr. Without it, the picker finds a session by the title of its pane alone, and can miss a session that `/cd` moved to another project.
 
