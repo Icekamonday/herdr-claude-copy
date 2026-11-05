@@ -22,6 +22,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import termios
+import threading
 import time
 import unittest
 import unittest.mock
@@ -122,7 +124,7 @@ def window(records):
 def prompt_box(state):
     """The foot of a Claude pane with its styles, as Herdr reads it, when the
     box holds a suggestion, a typed line, a paste or a command in shell mode.
-    The state 'sent' is the row of a message already sent."""
+    Each state whose name opens on 'sent' is the row of a message already sent."""
     with open(os.path.join(HERE, 'fixtures', 'prompt-box.json')) as fp:
         return json.load(fp)[state]
 
@@ -713,18 +715,38 @@ class Picking(unittest.TestCase):
         self.assertEqual(why, 'the prompt box is not on screen')
         self.assertNotIn('send_text', asked)
 
+    def test_a_box_scrolled_away_is_not_on_screen_though_sent_messages_are(self):
+        """A screen may mix two themes of Claude Code: a message keeps the
+        background that it was drawn with."""
+        agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
+        screens = sys.modules['server'].WORLD['screens']
+        scrolled = prompt_box('sent') + '\n' + prompt_box('sent in the light theme')
+        with unittest.mock.patch.dict(screens, {'w2:p1': scrolled}), stub_log() as log:
+            self.assertEqual(self.copy.place(agent, '!ls'), 'the prompt box is not on screen')
+            self.assertNotIn('send_text', pathlib.Path(log).read_text())
+
     def test_a_command_for_claude_replaces_a_suggestion_and_not_a_typed_line(self):
         """A paste dismisses the suggestion, as typing does."""
         agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
         screens = sys.modules['server'].WORLD['screens']
         for state, why in (('suggestion', None),
-                           ('typed', 'the prompt box already holds a line')):
+                           ('typed', 'the prompt box already holds a line'),
+                           ('shell mode', 'the prompt box is in shell mode')):
             with self.subTest(state=state), \
                     unittest.mock.patch.dict(screens, {'w2:p1': prompt_box(state)}), \
                     stub_log() as log:
                 self.assertEqual(self.copy.place(agent, '!ls'), why)
                 self.assertEqual('pane.send_text w2:p1' in pathlib.Path(log).read_text(),
                                  why is None)
+
+    def test_a_line_that_opens_on_a_bang_holds_the_box_with_no_shell_mode(self):
+        """A ! typed after the first character, then moved to the start, stays
+        in prompt mode."""
+        agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
+        screens = sys.modules['server'].WORLD['screens']
+        with unittest.mock.patch.dict(screens, {'w2:p1': '\u276f\u00a0!b'}):
+            self.assertEqual(self.copy.place(agent, '!ls'),
+                             'the prompt box already holds a line')
 
     def test_a_run_goes_to_the_free_shell_of_the_tab_without_an_enter(self):
         """The shell shows the blocks that the Enter of the user will run, and
@@ -787,7 +809,7 @@ class Picking(unittest.TestCase):
     def test_v_refuses_a_busy_shell_and_a_line_being_typed(self):
         """w1:p2 runs make, and w3:p5 holds a line after its prompt."""
         for shell, why in (('w1:p2', 'open a shell in this tab, or wait for its command to end'),
-                           ('w3:p5', 'clear the line of the free shell first: it does not '
+                           ('w3:p5', 'clear the line of pane w3:p5 (zsh) first: it does not '
                                      + 'end on a prompt')):
             status, said, asked, _ = self.paste(shell)
             self.assertEqual((status, said), (1, why + '\n'))
@@ -812,6 +834,80 @@ class Picking(unittest.TestCase):
         self.assertEqual(terminal.getvalue(),
                          '\033]52;c;bWFrZSAtajgKICBscw==\a')
 
+    def toast(self, refused=False, reply=None):
+        """A line said with that reply of Herdr to its toast: how the popup was
+        held, and what the log of the picker holds after."""
+        room = tempfile.mkdtemp(prefix='herdr-toast-')
+        self.addCleanup(shutil.rmtree, room)
+        answer = {} if reply is None else {'notification.show': lambda p: reply}
+        with unittest.mock.patch.dict(sys.modules['server'].WRITES, answer), \
+                unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': room}), \
+                unittest.mock.patch.object(self.copy, 'hold') as hold, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.copy.say('copied 1 block, 1 line', refused=refused)
+        log = pathlib.Path(room, 'herdr-claude-copy', 'picker.log')
+        return hold.call_args_list, log.read_text() if log.exists() else None
+
+    def test_a_toast_shown_holds_nothing_and_logs_nothing(self):
+        self.assertEqual(self.toast(), ([], None))
+
+    def test_a_toast_not_shown_keeps_the_line_and_logs_why(self):
+        """A refusal waits for a key, and a line of a key that went waits a
+        second at most."""
+        hidden = {'type': 'notification_show', 'shown': False, 'reason': 'disabled'}
+        for refused, wait in ((True, None), (False, 1)):
+            with self.subTest(refused=refused):
+                held, log = self.toast(refused, hidden)
+                self.assertEqual(held, [unittest.mock.call(wait)])
+                self.assertRegex(log, r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d disabled: '
+                                      r'copied 1 block, 1 line\n$')
+
+    def test_a_toast_refused_logs_the_code_of_herdr(self):
+        errors = sys.modules['server'].ERRORS
+        with unittest.mock.patch.dict(errors, {'notification.show': 'method_not_found'}):
+            held, log = self.toast()
+        self.assertEqual(held, [unittest.mock.call(1)])
+        self.assertIn(' refused: method_not_found: copied 1 block, 1 line', log)
+
+    def test_with_no_toast_a_refusal_waits_for_a_key_and_a_run_typed_a_second(self):
+        """The shell of the first tab is running make, and the second tab has a
+        free shell."""
+        hidden = {'notification.show': lambda p: {'type': 'notification_show',
+                                                  'shown': False, 'reason': 'disabled'}}
+        room = tempfile.mkdtemp(prefix='herdr-toast-')
+        self.addCleanup(shutil.rmtree, room)
+        for tab, status, wait in (('w1', 1, None), ('w2', 0, 1)):
+            agent = {'pane_id': f'{tab}:p1', 'tab_id': f'{tab}:t1'}
+            with self.subTest(tab), \
+                    unittest.mock.patch.dict(sys.modules['server'].WRITES, hidden), \
+                    unittest.mock.patch.dict(os.environ, {'XDG_STATE_HOME': room}), \
+                    unittest.mock.patch.object(self.copy, 'hold') as hold, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(self.copy.launch(agent, ['ls'], 'the sh block'), status)
+                self.assertEqual(hold.call_args_list, [unittest.mock.call(wait)])
+
+    def test_a_toast_with_no_reply_was_not_shown(self):
+        held, log = self.toast(reply={})
+        self.assertEqual(held, [unittest.mock.call(1)])
+        self.assertIn(' no reply: copied 1 block, 1 line', log)
+
+    def test_the_popup_holds_until_a_key_or_for_its_time(self):
+        """The terminal gets its mode back after the wait."""
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        with open(slave) as terminal, \
+                unittest.mock.patch.object(sys, 'stdin', terminal), \
+                unittest.mock.patch.object(sys, 'stdout', terminal):
+            mode = termios.tcgetattr(slave)
+            start = time.monotonic()
+            self.copy.hold(0.1)
+            self.assertGreaterEqual(time.monotonic() - start, 0.1)
+            threading.Timer(0.05, os.write, (master, b'q')).start()
+            start = time.monotonic()
+            self.copy.hold(5)
+            self.assertLess(time.monotonic() - start, 2)
+            self.assertEqual(termios.tcgetattr(slave), mode)
+
 
 class PromptBox(unittest.TestCase):
     """What the screen of an agent says about the box one types in, and which
@@ -830,30 +926,59 @@ class PromptBox(unittest.TestCase):
     def test_a_box_out_of_sight_is_told_from_an_empty_one(self):
         """A command is pasted only into a box seen, and an empty one."""
         self.assertIsNone(self.prompting.box('\u25cf a call\n  \u23bf its answer\n'))
-        self.assertEqual(self.prompting.box(self.screen('\u276f')), '')
+        self.assertEqual(self.prompting.box(self.screen('\u276f')), ('❯', ''))
         self.assertEqual(self.prompting.box(self.screen('\u276f half a question')),
-                         'half a question')
+                         ('\u276f', 'half a question'))
 
     def test_a_suggestion_in_the_box_is_no_line(self):
-        """Claude Code draws its suggestion dim, and draws a typed line, a paste
-        or a message already sent with no dim."""
+        """Claude Code draws its suggestion dim, and draws a typed line or a
+        paste with no dim."""
         box = self.prompting.box
-        self.assertEqual(box(prompt_box('suggestion')), '')
-        self.assertEqual(box(prompt_box('typed')), 'hello')
-        self.assertEqual(box(prompt_box('pasted')), '[Pasted text #16 +10 lines]')
-        # the box opens on a ! in shell mode, so the lowest mark is a message
-        self.assertEqual(box(prompt_box('sent') + '\n' + prompt_box('shell mode')),
-                         '/config')
+        self.assertEqual(box(prompt_box('suggestion')), ('❯', ''))
+        self.assertEqual(box(prompt_box('typed')), ('❯', 'hello'))
+        self.assertEqual(box(prompt_box('pasted')), ('❯', '[Pasted text #16 +10 lines]'))
+
+    def test_a_message_sent_on_a_background_is_no_box(self):
+        """Claude draws a message already sent on a background, in every theme
+        of Claude Code, so a screen scrolled up past the box shows no box."""
+        box = self.prompting.box
+        for sent in ('sent', 'sent in the light theme'):
+            with self.subTest(sent):
+                self.assertIsNone(box(prompt_box(sent)))
+                self.assertEqual(box(prompt_box(sent) + '\n' + prompt_box('typed')),
+                                 ('❯', 'hello'))
+
+    def test_a_box_in_shell_mode_opens_on_the_mark_of_that_mode(self):
+        """The color of the ! changes with the theme, and the footer opens on a
+        ! too, with a plain space after it. A line in prompt mode may open on a
+        ! of its own: the mark of the box tells the mode, not the line."""
+        box = self.prompting.box
+        for shell in ('shell mode', 'shell mode in the light theme'):
+            with self.subTest(shell):
+                self.assertEqual(box(prompt_box('sent') + '\n' + prompt_box(shell)), ('!', 'ls'))
+        self.assertEqual(box('\033[38;2;253;93;177m!\u00a0 \033[0m'), ('!', ''))
+        self.assertIsNone(box('  \033[38;2;253;93;177m! for shell mode\033[0m'))
+        self.assertEqual(box('\u276f\u00a0!b'), ('❯', '!b'))
+
+    def test_a_background_lasts_until_a_reset(self):
+        """The 48 among the values of a color is no background."""
+        box = self.prompting.box
+        self.assertIsNone(box('\033[44m❯ sent\033[0m'))
+        self.assertIsNone(box('\033[100m❯ sent'))
+        self.assertIsNone(box('\033[48;5;236m❯ sent'))
+        self.assertEqual(box('\033[48;2;55;55;55m\033[49m❯ typed'), ('❯', 'typed'))
+        self.assertEqual(box('\033[48;2;55;55;55m\033[0m❯ typed'), ('❯', 'typed'))
+        self.assertEqual(box('\033[38;2;48;48;48m❯ typed'), ('❯', 'typed'))
 
     def test_only_the_dim_characters_of_the_box_are_no_line(self):
         """A dim tail leaves the line typed before it, and the 2 of a true color
         is no dim."""
         box = self.prompting.box
-        self.assertEqual(box('\u276f hello \033[2mworld\033[0m'), 'hello')
-        self.assertEqual(box('\u276f \033[38;2;153;153;153mhello\033[0m'), 'hello')
-        self.assertEqual(box('\u276f \033[2ma\033[22mb\033[0m'), 'b')
-        self.assertEqual(box('\u276f \033[1;2mbold and dim\033[m'), '')
-        self.assertEqual(box('\033[2m\u276f a suggestion\033[0m'), '')
+        self.assertEqual(box('\u276f hello \033[2mworld\033[0m'), ('❯', 'hello'))
+        self.assertEqual(box('\u276f \033[38;2;153;153;153mhello\033[0m'), ('❯', 'hello'))
+        self.assertEqual(box('\u276f \033[2ma\033[22mb\033[0m'), ('❯', 'b'))
+        self.assertEqual(box('\u276f \033[1;2mbold and dim\033[m'), ('❯', ''))
+        self.assertEqual(box('\033[2m\u276f a suggestion\033[0m'), ('❯', ''))
 
     def test_a_popup_stands_in_the_pane_under_it(self):
         context = {'HERDR_PANE_ID': 'w1:p9',
@@ -908,17 +1033,18 @@ class Running(unittest.TestCase):
         waiter.start()
         self.addCleanup(waiter.stop)
 
-    def free(self, *shells, standing=None, tab='w3:t1'):
+    def free(self, *shells, standing=None, tab='w3:t1', heredoc=True):
         """The free shell among these panes, in a tab beside the agent w3:p1.
 
         In the world, bash in w3:p2 and zsh in w3:p7 are at their prompt.
-        w3:p5 is at its prompt too, with a line that the user is typing, and
-        w3:p8 runs fish, w3:p9 dash, and w3:p10 a shell named sh. w3:p3 runs
-        cargo, w3:p4 a shell in a container, and w3:p6 a panel.
+        zsh in w3:p5 and bash in w3:p11 are at their prompt too, each with a
+        line that the user is typing. w3:p8 runs fish, w3:p9 dash, and w3:p10
+        a shell named sh. w3:p3 runs cargo, w3:p4 a shell in a container, and
+        w3:p6 a panel.
         """
         agent = {'pane_id': 'w3:p1', 'tab_id': 'w3:t1', 'agent': 'claude'}
         panes = [agent, *({'pane_id': shell, 'tab_id': tab} for shell in shells)]
-        return self.running.free_shell(panes, agent, standing)[0]['pane_id']
+        return self.running.free_shell(panes, agent, standing, heredoc)[0]['pane_id']
 
     def test_a_shell_is_free_when_it_has_the_terminal_back(self):
         """A server that reports no process gives no free shell."""
@@ -942,10 +1068,35 @@ class Running(unittest.TestCase):
         self.assertEqual(self.free('w3:p2', 'w3:p7'), 'w3:p2')
         self.assertEqual(self.free('w3:p2', 'w3:p7', standing='w3:p7'), 'w3:p7')
 
-    def test_a_shell_with_a_line_typed_takes_no_run(self):
+    def test_a_shell_with_a_line_typed_takes_no_run_and_is_named(self):
         with self.assertRaisesRegex(self.running.NoRun,
-                                    '^clear the line of the free shell first'):
+                                    r'^clear the line of pane w3:p5 \(zsh\) first: it does '
+                                    'not end on a prompt$'):
             self.free('w3:p5')
+
+    def test_the_run_skips_a_shell_with_a_line_typed_for_the_next_free_one(self):
+        self.assertEqual(self.free('w3:p5', 'w3:p3', 'w3:p2'), 'w3:p2')
+
+    def test_the_shell_you_stand_in_is_never_skipped(self):
+        """A line typed there refuses the run, though another shell is free."""
+        with self.assertRaisesRegex(self.running.NoRun, r'^clear the line of pane w3:p5 '):
+            self.free('w3:p2', 'w3:p5', standing='w3:p5')
+
+    def test_of_two_shells_with_a_line_typed_the_refusal_names_the_first(self):
+        for shells, first in ((('w3:p5', 'w3:p11'), r'w3:p5 \(zsh\)'),
+                              (('w3:p11', 'w3:p5'), r'w3:p11 \(bash\)')):
+            with self.subTest(first), self.assertRaisesRegex(
+                    self.running.NoRun, f'^clear the line of pane {first} first'):
+                self.free(*shells)
+
+    def test_a_line_typed_is_named_before_a_next_shell_that_cannot_take_the_code(self):
+        """Clearing the line lets the code go, where the next shell refuses it:
+        dash for v, fish and sh for a run."""
+        for shells, heredoc in ((('w3:p11', 'w3:p9'), False), (('w3:p11', 'w3:p8'), True),
+                                (('w3:p11', 'w3:p10'), True)):
+            with self.subTest(shells), self.assertRaisesRegex(
+                    self.running.NoRun, r'^clear the line of pane w3:p11 \(bash\) first'):
+                self.free(*shells, heredoc=heredoc)
 
     def test_a_shell_that_reads_no_heredoc_takes_no_run(self):
         with self.assertRaisesRegex(self.running.NoRun,
@@ -1224,10 +1375,11 @@ class Waking(unittest.TestCase):
                 self.assertTrue(said.endswith(f': the agent is {status}'), said)
         self.assertEqual(len(self.deliver(run)[1]), 1)
 
-    def test_a_box_out_of_sight_or_holding_a_line_waits(self):
+    def test_a_box_out_of_sight_holding_a_line_or_in_shell_mode_waits(self):
         run = self.job(*self.FULL)
         for screen, why in (('  scrolled up, far from the box\n', 'is not on screen'),
-                            ('❯ half a sentence\n', 'already holds a line')):
+                            ('❯ half a sentence\n', 'already holds a line'),
+                            ('!\u00a0 \n', 'is in shell mode')):
             with self.subTest(screen=screen):
                 said, prompts = self.deliver(run, screen=screen)
                 self.assertEqual(prompts, [])

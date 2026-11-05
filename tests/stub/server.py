@@ -60,7 +60,12 @@ def prompted(params):
     return {'type': 'agent_prompted'}
 
 
-WRITES = {'agent.prompt': prompted}
+WRITES = {
+    'agent.prompt': prompted,
+    # a test of a toast that Herdr does not show replaces this answer
+    'notification.show': lambda p: {'type': 'notification_show', 'shown': True,
+                                    'reason': 'shown'},
+}
 
 
 def answer(request):

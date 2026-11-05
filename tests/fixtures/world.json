@@ -108,6 +108,11 @@
       "shell_pid": 500,
       "foreground_process_group_id": 500,
       "foreground_processes": [{"pid": 500, "name": "sh"}]
+    },
+    "w3:p11": {
+      "shell_pid": 510,
+      "foreground_process_group_id": 510,
+      "foreground_processes": [{"pid": 510, "name": "bash"}]
     }
   },
   "screens": {
@@ -118,6 +123,7 @@
     "w3:p7": "host% ",
     "w3:p8": "user@host ~/w> ",
     "w3:p9": "$ ",
-    "w3:p10": "$ "
+    "w3:p10": "$ ",
+    "w3:p11": "user@host:~/w$ make dist"
   }
 }

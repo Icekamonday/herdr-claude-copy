@@ -20,10 +20,14 @@ steps: bin/running.py says how. The v key types the code there as it is.
 
 import base64
 import curses
+import datetime
 import json
 import os
 import re
+import select
 import sys
+import termios
+import tty
 
 try:
     import pygments.lexers
@@ -68,6 +72,7 @@ OUTPUTS = ('<bash-stdout>', '<bash-stderr>', '<local-command-stdout>',
            '<local-command-stderr>')
 
 CUT = '(the prompt of this turn is too far back in the transcript)'
+SHOWN_FOR = 1       # the seconds that the popup keeps a line that no toast shows
 GUTTER = 7          # the row number, the bar of the cursor, and a space each
 # the rule between two messages of a turn. Claude almost never writes a line
 # of it alone, so it does not read as a line of a message. It is drawn and
@@ -936,9 +941,10 @@ def place(agent, text):
     """Put the text in the prompt box of the agent without sending it, or say
     why not.
 
-    A blocked agent would take the text as the answer to its dialog, and a box
-    that holds a draft would take it as its tail. The status is read again,
-    since the agent may have moved on while the picker was open.
+    A blocked agent would take the text as the answer to its dialog, a box
+    that holds a draft would take it as its tail, and a box in shell mode
+    would run it as a command. The status is read again, since the agent may
+    have moved on while the picker was open.
     """
     agent = api.pane(agent['pane_id']) or agent
     if agent.get('agent_status') == 'blocked':
@@ -949,15 +955,60 @@ def place(agent, text):
     return why
 
 
-def say(line):
-    """Print the line, and show it as a toast too: the pane closes as soon as
-    the script exits."""
-    print(line)
-    api.call('notification', 'show', title='copy', body=line, sound='none')
+def say(line, refused=False):
+    """Print the line, and show it as a toast too: Herdr closes the popup as
+    soon as the script exits.
+
+    Herdr shows no toast with its default config, and it limits how many it
+    shows. When Herdr shows none, the popup keeps the line on screen: until a
+    key for a refusal, and for a second at most otherwise. The log keeps the
+    reason.
+    """
+    print(line, flush=True)
+    try:
+        reply = api.request('notification', 'show', title='copy', body=line, sound='none')
+    except api.Refused as why:
+        reply = {'reason': f'refused: {why}'}
+    if reply.get('shown'):
+        return
+    note(reply.get('reason') or 'no reply', line)
+    hold(None if refused else SHOWN_FOR)
+
+
+def log_path():
+    return os.path.join(os.path.dirname(running.home()), 'picker.log')
+
+
+def note(reason, line):
+    """Add to the log of the picker why Herdr showed no toast for that line.
+    A log that cannot be written stops nothing."""
+    path = log_path()
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, 'a') as fp:
+            fp.write(f'{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {reason}: {line}\n')
+    except OSError:
+        pass
+
+
+def hold(seconds):
+    """Keep the popup open on what it printed until a key, or for that many
+    seconds at most. Without a terminal, there is no popup to keep."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    fd = sys.stdin.fileno()
+    mode = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        select.select([fd], [], [], seconds)
+    finally:
+        # the flush drops the key that ended the wait, so that the next reader
+        # of the terminal does not get it
+        termios.tcsetattr(fd, termios.TCSAFLUSH, mode)
 
 
 def refuse(why):
-    say(why)
+    say(why, refused=True)
     return 1
 
 
@@ -991,8 +1042,7 @@ def paste(agent, code, what):
     except running.NoRun as why:
         return refuse(str(why))
     type_into(shell['pane_id'], code)
-    say(f"press Enter in pane {shell['pane_id']}{f' ({name})' if name else ''} "
-        f"to run {what}")
+    say(f'press Enter in {running.named(shell, name)} to run {what}')
     return 0
 
 
@@ -1026,12 +1076,12 @@ def main():
     if done == 'paste':
         return paste(pane, text, what)
     clip(text)
-    line = said(what, text)
+    line, why = said(what, text), None
     if done == 'claude':
         why = place(pane, text)
         line += f', not put in the prompt box: {why}' if why \
             else ', and put in the prompt box'
-    say(line)
+    say(line, refused=bool(why))
     return 0
 
 

@@ -10,7 +10,7 @@ A mouse copy takes the screen grid. Claude Code draws a code block two columns i
 
 ## Requirements
 
-- Herdr 0.9.0 or later, on Linux. The wake of a run needs Linux 5.3 or later. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only.
+- Herdr 0.9.0 or later, on Linux. The wake of a run needs Linux 5.3 or later. The `*` and `v` keys ask Herdr which process runs in each shell, and were checked on Herdr 0.9.3 only. So was the reply of Herdr to a toast, which tells the picker whether the toast showed.
 - Python 3.10 or later at `/usr/bin/python3`, with no other package. If Pygments is installed for that Python, the picker colours the code.
 - `script` of util-linux, for the `*` key.
 
@@ -31,6 +31,8 @@ description = "copy a block of Claude's last answers"
 ```
 
 Then reload the configuration with `herdr server reload-config`.
+
+The picker says what it did in a Herdr toast, which shows only with `delivery = "herdr"` under `[ui.toast]` in the same file. If Herdr shows no toast, the popup keeps the line on screen for a second, or until you press a key after a refusal. `~/.local/state/herdr-claude-copy/picker.log` says why the toast didn't show.
 
 ## Use
 
@@ -62,9 +64,9 @@ The plugin doesn't need the Claude Code integration of Herdr. Without it, the pi
 
 ![Two blocks run in the shell beside Claude, and Claude hears of the run](docs/demo-run.gif)
 
-The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt: the one you stand in, else the first.
+The `*` key puts the shell blocks of the selection in a free shell of the tab, as a run of one step per block, and sends no Enter. A free shell is a pane of the tab with no agent, whose shell is at its prompt with nothing typed: the one you stand in, else the first.
 
-The `v` key puts the code that `$` copies in the free shell as it is, and sends no Enter either. It starts no run: no step, no log, and no wake of Claude. It refuses a busy shell or a typed line as `*` does, and takes only bash, zsh or fish. Their line editors hold a bracketed paste until your Enter. Another shell, such as dash, takes each newline of the paste as an Enter and runs the lines as they arrive. Bash does the same if you turned bracketed paste off: use `$` there instead.
+The `v` key puts the code that `$` copies in the free shell as it is, and sends no Enter either. It starts no run: no step, no log, and no wake of Claude. It skips a busy shell or a typed line as `*` does, and takes only bash, zsh or fish. Their line editors hold a bracketed paste until your Enter. Another shell, such as dash, takes each newline of the paste as an Enter and runs the lines as they arrive. Bash does the same if you turned bracketed paste off: use `$` there instead.
 
 The shell shows the blocks as they will run, behind the script of the run:
 
@@ -92,11 +94,11 @@ A tool that writes its own log can write it into `$STEP_DIR`. A step that fails 
 
 The run is a heredoc, and it goes out as a bracketed paste, as for the `!` key. So the key takes only bash or zsh. Fish reads no heredoc. Dash and the other shells read no bracketed paste: they take its markers as text, and the run wouldn't start. The key refuses a shell named `sh` too, since that name doesn't tell dash from bash. Bash 5.1 and zsh turn bracketed paste on by default. If your shell has it off, nothing runs before your Enter either, but you can't edit the lines, and a tab in a block triggers completion.
 
-Herdr doesn't report where the cursor is, so the picker reads the last line on the screen of the shell. If that line doesn't end with `$`, `#`, `%`, `>` or `❯`, you may be typing a command there, and the key does nothing but say so. If your prompt ends with another character, or shows text on its right, the key refuses every time.
+Herdr doesn't report where the cursor is, so the picker reads the last line on the screen of the shell. If that line doesn't end with `$`, `#`, `%`, `>` or `❯`, you may be typing a command there, and the key tries the next free shell. It never skips the shell you stand in: there, or when no other shell is free, it does nothing and names the pane to clear. If your prompt ends with another character, or shows text on its right, the key never takes that shell.
 
 When the run is over, Claude hears of it: a waiter types into Claude's prompt box how each step ended and where its files are, and sends it. The run is over after its last step, after a `Ctrl+C`, or when its shell closes. The run starts the waiter before its first step, in a session of its own, so the waiter outlives both a `Ctrl+C` and the shell.
 
-The waiter types only into a box that can take a line. Claude must not be working or waiting on a dialog, and the box must be on screen and empty. A prompt suggestion of Claude Code counts as empty. The waiter reads the pane of Claude even when its tab isn't displayed, so you can switch to another space during the run. If the box can't take the line, the waiter looks again every 2 seconds. It gives up 24 hours after the end of the run, or when the pane of Claude closes or no longer runs Claude. To cancel a wake, create the file `no-wake` in the directory of the run: the run shows the command when it ends. `wake.log` says how the wake went.
+The waiter types only into a box that can take a line. Claude must not be working or waiting on a dialog, and the box must be on screen, empty and not in shell mode. A prompt suggestion of Claude Code counts as empty. The waiter reads the pane of Claude even when its tab isn't displayed, so you can switch to another space during the run. If the box can't take the line, the waiter looks again every 2 seconds. It gives up 24 hours after the end of the run, or when the pane of Claude closes or no longer runs Claude. To cancel a wake, create the file `no-wake` in the directory of the run: the run shows the command when it ends. `wake.log` says how the wake went.
 
 If two runs of one Claude end together, the second wake waits for the turn that the first one starts. For that, each waiter takes a lock on the pane of Claude: an empty file `wake-<pane id>.lock` in `~/.local/state/herdr-claude-copy/`, next to `runs/`. These files are harmless, and you can delete them when no run is waiting.
 
@@ -142,7 +144,7 @@ Each line adds to the host directory, and never replaces it. The optional second
 
 ## Security
 
-- The `!` key puts the code in Claude's prompt box and sends no Enter. It refuses a box that holds a typed line, and replaces a prompt suggestion of Claude Code, the grey text that typing dismisses. When you press Enter, Claude Code runs the text in a shell with your rights, so read it first. The picker removes control characters from the text, so an answer can't end the paste early and send a line.
+- The `!` key puts the code in Claude's prompt box and sends no Enter. It refuses a box that holds a typed line or is in shell mode, and replaces a prompt suggestion of Claude Code, the grey text that typing dismisses. When you press Enter, Claude Code runs the text in a shell with your rights, so read it first. The picker removes control characters from the text, so an answer can't end the paste early and send a line.
 - The `*` key puts the code in a shell and sends no Enter. When you press Enter, the shell runs the blocks with your rights, so read them first. The picker removes control characters from the blocks, as for the `!` key.
 - The `v` key puts the code in bash, zsh or fish and sends no Enter, without the control characters. When you press Enter, the shell runs the code with your rights, so read it first. If bracketed paste is off in that shell, each line runs as it arrives.
 - The wake that the waiter types into Claude's prompt box holds the name of the run, the status of each step and the directory of the run. It never holds what a step wrote.

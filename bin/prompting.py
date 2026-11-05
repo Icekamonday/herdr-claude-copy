@@ -4,7 +4,8 @@ A key fires from wherever you stand, and that is as often a shell of the tab
 as the agent itself, so the agent is found from the tab. A line typed there
 goes where you type, so it goes only into a box that can take it: an agent at
 work would queue it behind the turn, a blocked one would take it as the answer
-to its dialog, and a box already holding a draft would take it as its tail.
+to its dialog, a box already holding a draft would take it as its tail, and a
+box in shell mode would run it as a command.
 """
 
 import json
@@ -16,8 +17,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import api
 
 MARK = '❯'          # the mark Claude opens its prompt box with
+# the mark of the box in shell mode, where a line runs as a command. A
+# no-break space follows it, and a plain space follows the ! of the footer
+# that names the mode
+SHELL = '!'
+SHELL_OPENS = SHELL + '\xa0'
 # a styled read carries CSI sequences, whose SGR holds the style, and OSC ones
 ESCAPE = re.compile(r'\x1b\[([0-?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+# the SGR codes of a background in the eight colors and the eight bright ones;
+# 48 names its color in the values after it
+BACKGROUNDS = {str(code) for code in (*range(40, 48), *range(100, 108))}
 
 
 def standing():
@@ -53,58 +62,86 @@ def target(panes, standing):
 
 
 def box(screen):
-    """What the prompt box on that screen holds, or None when it is not there.
+    """The mark that the prompt box on that screen opens on, and what the box
+    holds, or None when it is not there. The mark tells the mode: SHELL in
+    shell mode, else MARK, even for a line that opens on a !.
 
     Claude opens its box and every message you have sent with the same mark,
-    so the box is the lowest of them. A screen carrying none is one scrolled
-    away from it.
+    and draws a sent message on a background. So the box is the lowest mark
+    on no background, and a screen with none is scrolled away from the box.
 
     A styled screen tells a suggestion from a typed line. Claude Code draws
     its suggestion for the next prompt dim, and typing dismisses it, so the
     box holds only the characters that are not dim.
     """
-    rows = [row for row in screen.splitlines()
-            if ESCAPE.sub('', row).strip().startswith(MARK)]
-    return typed(rows[-1]).strip().removeprefix(MARK).strip() if rows else None
+    for row in reversed(screen.splitlines()):
+        plain = ESCAPE.sub('', row).lstrip()
+        mark = MARK if plain.startswith(MARK) else SHELL if plain.startswith(SHELL_OPENS) \
+            else None
+        if mark and not on_background(row):
+            return mark, typed(row).strip().removeprefix(mark).strip()
+    return None
+
+
+def pieces(row):
+    """The text of that row between its escapes, each piece with whether it is
+    drawn dim and whether it lies on a background."""
+    dim = background = False
+    at = 0
+    for escape in ESCAPE.finditer(row):
+        yield row[at:escape.start()], dim, background
+        if escape.group(2) == 'm':
+            dim, background = style_after(escape.group(1), dim, background)
+        at = escape.end()
+    yield row[at:], dim, background
 
 
 def typed(row):
     """The characters of that row that are not drawn dim, with no escapes."""
-    kept, dim, at = [], False, 0
-    for escape in ESCAPE.finditer(row):
-        if not dim:
-            kept.append(row[at:escape.start()])
-        if escape.group(2) == 'm':
-            dim = dim_after(escape.group(1), dim)
-        at = escape.end()
-    if not dim:
-        kept.append(row[at:])
-    return ''.join(kept)
+    return ''.join(text for text, dim, _ in pieces(row) if not dim)
 
 
-def dim_after(params, dim):
-    """Whether the text after an SGR with those parameters is drawn dim.
+def on_background(row):
+    """Whether the first character of that row that is not a space lies on a
+    background."""
+    return next((background for text, _, background in pieces(row) if text.strip()), False)
+
+
+def style_after(params, dim, background):
+    """Whether the text after an SGR with those parameters is drawn dim, and
+    whether it lies on a background.
 
     A color names its values after 38, 48 or 58, and the 2 of a true color
-    among them is no dim.
+    among them is no dim, as a 48 among them is no background.
     """
     codes = iter(params.split(';'))
     for code in codes:
-        if code in ('', '0', '22'):
+        if code in ('', '0'):
+            dim = background = False
+        elif code == '22':
             dim = False
         elif code == '2':
             dim = True
+        elif code == '49':
+            background = False
+        elif code in BACKGROUNDS:
+            background = True
         elif code in ('38', '48', '58'):
+            if code == '48':
+                background = True
             for _ in range({'5': 1, '2': 3}.get(next(codes, ''), 0)):
                 next(codes, None)
-    return dim
+    return dim, background
 
 
 def box_refusal(pane):
     """Why the prompt box of that pane cannot take a line now, or None."""
-    held = box(screen(pane, styled=True))
-    if held is None:
+    found = box(screen(pane, styled=True))
+    if found is None:
         return 'the prompt box is not on screen'
+    mark, held = found
+    if mark == SHELL:
+        return 'the prompt box is in shell mode'
     return 'the prompt box already holds a line' if held else None
 
 

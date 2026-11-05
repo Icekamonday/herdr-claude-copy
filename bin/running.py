@@ -141,38 +141,53 @@ def empty_line(screen):
     return last.endswith(PROMPT_ENDS)
 
 
+def named(shell, name):
+    """A shell as the picker names it to the user: its pane, then its program
+    when Herdr reports one."""
+    return f"pane {shell['pane_id']}{f' ({name})' if name else ''}"
+
+
 def free_shell(panes, agent, standing, heredoc=True):
     """The shell that the code of the agent goes to, and the name of its
     program.
 
-    It is a pane of the tab of the agent, with no agent, at its prompt: the
-    one you stand in, else the first. Nothing runs before the Enter of the
-    user, so a shell that was not meant costs only a line to clear. The code
-    goes out as a paste, which the shell must hold until that Enter, and a
-    run is also a heredoc, which fish does not read.
+    It is a pane of the tab of the agent, with no agent, at its prompt with
+    nothing typed after it: the one you stand in, else the first. Nothing
+    runs before the Enter of the user, so a shell that was not meant costs
+    only a line to clear. The picker skips another shell that holds a typed
+    line. The shell you stand in is the one you meant, so a line typed there
+    refuses the code. The code goes out as a paste, which the shell must hold
+    until that Enter, and a run is also a heredoc, which fish does not read.
+    If the next shell cannot take the code, the refusal names the shell with
+    the typed line, since clearing that line is what lets the code go.
     """
     tab = [pane for pane in panes
            if pane.get('tab_id') == agent.get('tab_id') and not pane.get('agent')]
+    held = None
     for shell in sorted(tab, key=lambda pane: pane['pane_id'] != standing):
         info = api.call('pane', 'process_info', pane_id=shell['pane_id']) \
             .get('process_info') or {}
-        if at_prompt(info):
+        if not at_prompt(info):
+            continue
+        if empty_line(prompting.screen(shell)):
             break
+        held = held or NoRun(f'clear the line of {named(shell, shell_name(info))} first: '
+                             f'it does not end on a prompt')
+        if shell['pane_id'] == standing:
+            raise held
     else:
-        raise NoRun('open a shell in this tab, or wait for its command to end')
+        raise held or NoRun('open a shell in this tab, or wait for its command to end')
     name = shell_name(info)
     called = name or 'this shell'
     if heredoc and name not in PASTES:
-        raise NoRun(f'open bash or zsh in this tab: {called} may read no bracketed paste, '
-                    f'and the run would not start')
+        raise held or NoRun(f'open bash or zsh in this tab: {called} may read no '
+                            f'bracketed paste, and the run would not start')
     if name not in PASTES:
-        raise NoRun(f"open bash, zsh or fish in this tab: {called} "
-                    f"would run each line of the code as it arrives")
+        raise held or NoRun(f"open bash, zsh or fish in this tab: {called} "
+                            f"would run each line of the code as it arrives")
     if heredoc and name not in SHELLS:
-        raise NoRun(f'open bash or zsh in this tab: a run is a heredoc, which {called} '
-                    f'may not read')
-    if not empty_line(prompting.screen(shell)):
-        raise NoRun('clear the line of the free shell first: it does not end on a prompt')
+        raise held or NoRun(f'open bash or zsh in this tab: a run is a heredoc, which '
+                            f'{called} may not read')
     return shell, name
 
 
