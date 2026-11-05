@@ -89,8 +89,10 @@ def _named(stamp, state):
     return given or name or guessed
 
 
+# the title that Claude Code gives a session with no name of any kind
+UNNAMED = 'claude code'
 # what the CLI writes in the title while it has nothing of its own to say
-TRANSIENT = ('claude', 'claude · resume', 'claude - resume')
+TRANSIENT = ('claude', 'claude · resume', 'claude - resume', UNNAMED)
 
 
 def _title(pane):
@@ -249,21 +251,29 @@ def _by_identity(root, cwd, sid, strays):
                 None)
 
 
-def _recent(root, cwd):
-    """The transcripts of the project of a cwd, written in the last day, as
-    (written, project directory, session id).
+def _nearest(root, cwd):
+    """The project directory of a cwd under a root, or None.
 
     A cwd without a project takes that of its nearest parent, as `devcontainer
-    exec` starts Claude at the top of the workspace. Only the dates are read:
-    a project can hold hundreds of transcripts.
+    exec` starts Claude at the top of the workspace.
     """
     here = cwd or ''
     while here and not os.path.isdir(os.path.join(root, project(here))):
         parent = os.path.dirname(here)
         here = parent if parent != here else ''
-    if not here:
+    return project(here) if here else None
+
+
+def _recent(root, cwd):
+    """The transcripts of the project of a cwd, written in the last day, as
+    (written, project directory, session id).
+
+    Only the dates are read: a project can hold hundreds of transcripts.
+    """
+    folder = _nearest(root, cwd)
+    if not folder:
         return []
-    folder, since, found = project(here), time.time() - RENAMED_WITHIN, []
+    since, found = time.time() - RENAMED_WITHIN, []
     try:
         entries = list(os.scandir(os.path.join(root, folder)))
     except OSError:
@@ -285,6 +295,23 @@ def _name(path):
     return given or guessed
 
 
+def _has_name(path):
+    """Whether a transcript carries a name of any kind. Most carry one near
+    their end, so the wide window is read only for those that do not."""
+    return any(_names(path, NAME_WINDOW)) or bool(_name(path))
+
+
+def _unclaimed(places, cwd, claimed, strays):
+    """The transcripts of the project of a cwd, written in the last day,
+    that no pane holds, newest first."""
+    recent = [(written, root, folder, stem) for root, _ in places
+              for written, folder, stem in _recent(root, cwd)]
+    for _, root, folder, stem in sorted(recent, reverse=True):
+        path = _under(root, folder, stem, strays) if stem not in claimed else None
+        if path:
+            yield path
+
+
 class NoTranscript(Exception):
     """Why the finder gives up, in words that say what to do."""
 
@@ -300,6 +327,12 @@ def find(pane, panes):
 
     If the title names no session, the identity decides alone: Claude Code
     can leave the title that the shell set.
+
+    Claude Code gives a session a name only after a prompt that a person
+    typed, so a session that another session prompts can have none.
+    Without an identity, its cwd is its only key. The finder then takes
+    the one transcript of the project that carries no name, and refuses
+    when several carry none.
     """
     places, strays = sources(), []
     taken = resolve_all(panes, _payloads(places, strays))
@@ -307,7 +340,8 @@ def find(pane, panes):
         return taken[pane['pane_id']]['transcript_path']
     title = _title(pane)
     sid = (pane.get('agent_session') or {}).get('value')
-    if not title and not sid:
+    unnamed = (pane.get('terminal_title_stripped') or '').strip().lower() == UNNAMED
+    if not title and not sid and not unnamed:
         raise NoTranscript('name this session with /rename, then press the key again')
     claimed = {state['session_id'] for state in taken.values()}
 
@@ -321,12 +355,18 @@ def find(pane, panes):
             held = held or path
 
     if title:
-        recent = [(written, root, folder, stem) for root, _ in places
-                  for written, folder, stem in _recent(root, pane.get('cwd'))]
-        for _, root, folder, stem in sorted(recent, reverse=True):
-            path = _under(root, folder, stem, strays) if stem not in claimed else None
-            if path and _name(path) == title:
+        for path in _unclaimed(places, pane.get('cwd'), claimed, strays):
+            if _name(path) == title:
                 return path
+
+    if unnamed and not sid:
+        nameless = [path for path in _unclaimed(places, pane.get('cwd'), claimed, strays)
+                    if not _has_name(path)]
+        if len(nameless) == 1:
+            return nameless[0]
+        if nameless:
+            raise NoTranscript('name this session with /rename, then press the key again: '
+                               f'{len(nameless)} sessions of this project have no name')
 
     if held:
         return held
@@ -334,6 +374,14 @@ def find(pane, panes):
     if strays:
         path, root = strays[0]
         raise NoTranscript(f'check {path}: it resolves outside {root}')
-    raise NoTranscript(f'add the projects directory of this session to {sources_file()}: '
-                       f'no transcript carries its {"name" if title else "id"}')
+    if title or sid:
+        why = f'no transcript carries its {"name" if title else "id"}'
+    else:
+        why = 'no transcript of the last day lacks a name'
+    # with a project for its cwd, the session may run on the host or in a container
+    if any(_nearest(root, pane.get('cwd')) for root, _ in places):
+        advice = 'name this session with /rename, or add its projects directory to'
+    else:
+        advice = 'add the projects directory of this session to'
+    raise NoTranscript(f'{advice} {sources_file()}: {why}')
 

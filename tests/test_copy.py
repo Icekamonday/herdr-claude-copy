@@ -129,6 +129,7 @@ def prompt_box(state):
 
 ONE = '11111111-1111-4111-8111-111111111111'
 TWO = '22222222-2222-4222-8222-222222222222'
+THREE = '33333333-3333-4333-8333-333333333333'
 
 
 def titled(name):
@@ -1527,6 +1528,49 @@ class Finding(unittest.TestCase):
         with self.assertRaisesRegex(self.store.NoTranscript, '^name this session with /rename'):
             self.find('claude')
 
+    def test_a_session_with_no_name_is_the_one_transcript_without_a_name(self):
+        """Claude Code titles "Claude Code" a session that has no name of any kind."""
+        self.transcript(ONE, titled('build'))
+        self.transcript(TWO, {'type': 'ai-title', 'aiTitle': 'Fix the build'})
+        found = self.transcript(THREE, age=60)
+        self.assertEqual(self.find('Claude Code', cwd='/w/app/src'), found)
+
+    def test_the_identity_decides_for_a_session_with_no_name(self):
+        found = self.transcript(ONE, folder='-w-lib')
+        self.transcript(TWO)
+        self.assertEqual(self.find('Claude Code', ONE), found)
+
+    def test_a_session_id_with_no_transcript_yet_takes_no_other_one(self):
+        """Herdr knows the session id before the first prompt writes a transcript."""
+        self.transcript(TWO)
+        with self.assertRaisesRegex(self.store.NoTranscript, 'no transcript carries its id$'):
+            self.find('Claude Code', ONE)
+
+    def test_two_sessions_with_no_name_are_refused(self):
+        self.transcript(ONE)
+        self.transcript(TWO)
+        with self.assertRaisesRegex(self.store.NoTranscript,
+                                    '^name this session with /rename, then press the key '
+                                    'again: 2 sessions of this project have no name$'):
+            self.find('Claude Code')
+
+    def test_a_session_with_no_name_and_no_transcript_is_refused(self):
+        self.transcript(ONE, titled('build'))
+        with self.assertRaisesRegex(self.store.NoTranscript,
+                                    'no transcript of the last day lacks a name$'):
+            self.find('Claude Code')
+
+    def test_the_refusal_offers_rename_where_the_cwd_has_a_project(self):
+        """Without a project for its cwd, the session cannot run on the host."""
+        self.transcript(ONE, titled('build'))
+        sources = re.escape(self.store.sources_file())
+        either = f'name this session with /rename, or add its projects directory to {sources}'
+        only = f'add the projects directory of this session to {sources}'
+        for cwd, advice in (('/w/app/src', either), ('/x', only)):
+            with self.subTest(cwd), self.assertRaisesRegex(
+                    self.store.NoTranscript, f'^{advice}: no transcript carries its name$'):
+                self.find('deploy', cwd=cwd)
+
     def test_a_forged_transcript_path_is_not_followed(self):
         """The finder keeps the project and the file, and joins them to its root."""
         forged = self.transcript(ONE, titled('build'), root=os.path.join(self.room, 'forged'))
@@ -1552,7 +1596,7 @@ class Finding(unittest.TestCase):
         self.payload(ONE, 'deploy', os.path.join(self.root, '-w-app', f'{TWO}.jsonl'))
         for title in ('build', 'deploy'):
             with self.subTest(title), \
-                    self.assertRaisesRegex(self.store.NoTranscript, '^add the projects directory'):
+                    self.assertRaisesRegex(self.store.NoTranscript, 'carries its name$'):
                 self.find(title)
 
     def test_an_old_transcript_of_the_project_is_not_taken(self):
