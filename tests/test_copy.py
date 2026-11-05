@@ -728,13 +728,23 @@ class Picking(unittest.TestCase):
         agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
         screens = sys.modules['server'].WORLD['screens']
         for state, why in (('suggestion', None),
-                           ('typed', 'the prompt box already holds a line')):
+                           ('typed', 'the prompt box already holds a line'),
+                           ('shell mode', 'the prompt box is in shell mode')):
             with self.subTest(state=state), \
                     unittest.mock.patch.dict(screens, {'w2:p1': prompt_box(state)}), \
                     stub_log() as log:
                 self.assertEqual(self.copy.place(agent, '!ls'), why)
                 self.assertEqual('pane.send_text w2:p1' in pathlib.Path(log).read_text(),
                                  why is None)
+
+    def test_a_line_that_opens_on_a_bang_holds_the_box_with_no_shell_mode(self):
+        """A ! typed after the first character, then moved to the start, stays
+        in prompt mode."""
+        agent = {'pane_id': 'w2:p1', 'agent_status': 'idle'}
+        screens = sys.modules['server'].WORLD['screens']
+        with unittest.mock.patch.dict(screens, {'w2:p1': '\u276f\u00a0!b'}):
+            self.assertEqual(self.copy.place(agent, '!ls'),
+                             'the prompt box already holds a line')
 
     def test_a_run_goes_to_the_free_shell_of_the_tab_without_an_enter(self):
         """The shell shows the blocks that the Enter of the user will run, and
@@ -840,17 +850,17 @@ class PromptBox(unittest.TestCase):
     def test_a_box_out_of_sight_is_told_from_an_empty_one(self):
         """A command is pasted only into a box seen, and an empty one."""
         self.assertIsNone(self.prompting.box('\u25cf a call\n  \u23bf its answer\n'))
-        self.assertEqual(self.prompting.box(self.screen('\u276f')), '')
+        self.assertEqual(self.prompting.box(self.screen('\u276f')), ('❯', ''))
         self.assertEqual(self.prompting.box(self.screen('\u276f half a question')),
-                         'half a question')
+                         ('\u276f', 'half a question'))
 
     def test_a_suggestion_in_the_box_is_no_line(self):
         """Claude Code draws its suggestion dim, and draws a typed line or a
         paste with no dim."""
         box = self.prompting.box
-        self.assertEqual(box(prompt_box('suggestion')), '')
-        self.assertEqual(box(prompt_box('typed')), 'hello')
-        self.assertEqual(box(prompt_box('pasted')), '[Pasted text #16 +10 lines]')
+        self.assertEqual(box(prompt_box('suggestion')), ('❯', ''))
+        self.assertEqual(box(prompt_box('typed')), ('❯', 'hello'))
+        self.assertEqual(box(prompt_box('pasted')), ('❯', '[Pasted text #16 +10 lines]'))
 
     def test_a_message_sent_on_a_background_is_no_box(self):
         """Claude draws a message already sent on a background, in every theme
@@ -859,7 +869,20 @@ class PromptBox(unittest.TestCase):
         for sent in ('sent', 'sent in the light theme'):
             with self.subTest(sent):
                 self.assertIsNone(box(prompt_box(sent)))
-                self.assertEqual(box(prompt_box(sent) + '\n' + prompt_box('typed')), 'hello')
+                self.assertEqual(box(prompt_box(sent) + '\n' + prompt_box('typed')),
+                                 ('❯', 'hello'))
+
+    def test_a_box_in_shell_mode_opens_on_the_mark_of_that_mode(self):
+        """The color of the ! changes with the theme, and the footer opens on a
+        ! too, with a plain space after it. A line in prompt mode may open on a
+        ! of its own: the mark of the box tells the mode, not the line."""
+        box = self.prompting.box
+        for shell in ('shell mode', 'shell mode in the light theme'):
+            with self.subTest(shell):
+                self.assertEqual(box(prompt_box('sent') + '\n' + prompt_box(shell)), ('!', 'ls'))
+        self.assertEqual(box('\033[38;2;253;93;177m!\u00a0 \033[0m'), ('!', ''))
+        self.assertIsNone(box('  \033[38;2;253;93;177m! for shell mode\033[0m'))
+        self.assertEqual(box('\u276f\u00a0!b'), ('❯', '!b'))
 
     def test_a_background_lasts_until_a_reset(self):
         """The 48 among the values of a color is no background."""
@@ -867,19 +890,19 @@ class PromptBox(unittest.TestCase):
         self.assertIsNone(box('\033[44m❯ sent\033[0m'))
         self.assertIsNone(box('\033[100m❯ sent'))
         self.assertIsNone(box('\033[48;5;236m❯ sent'))
-        self.assertEqual(box('\033[48;2;55;55;55m\033[49m❯ typed'), 'typed')
-        self.assertEqual(box('\033[48;2;55;55;55m\033[0m❯ typed'), 'typed')
-        self.assertEqual(box('\033[38;2;48;48;48m❯ typed'), 'typed')
+        self.assertEqual(box('\033[48;2;55;55;55m\033[49m❯ typed'), ('❯', 'typed'))
+        self.assertEqual(box('\033[48;2;55;55;55m\033[0m❯ typed'), ('❯', 'typed'))
+        self.assertEqual(box('\033[38;2;48;48;48m❯ typed'), ('❯', 'typed'))
 
     def test_only_the_dim_characters_of_the_box_are_no_line(self):
         """A dim tail leaves the line typed before it, and the 2 of a true color
         is no dim."""
         box = self.prompting.box
-        self.assertEqual(box('\u276f hello \033[2mworld\033[0m'), 'hello')
-        self.assertEqual(box('\u276f \033[38;2;153;153;153mhello\033[0m'), 'hello')
-        self.assertEqual(box('\u276f \033[2ma\033[22mb\033[0m'), 'b')
-        self.assertEqual(box('\u276f \033[1;2mbold and dim\033[m'), '')
-        self.assertEqual(box('\033[2m\u276f a suggestion\033[0m'), '')
+        self.assertEqual(box('\u276f hello \033[2mworld\033[0m'), ('❯', 'hello'))
+        self.assertEqual(box('\u276f \033[38;2;153;153;153mhello\033[0m'), ('❯', 'hello'))
+        self.assertEqual(box('\u276f \033[2ma\033[22mb\033[0m'), ('❯', 'b'))
+        self.assertEqual(box('\u276f \033[1;2mbold and dim\033[m'), ('❯', ''))
+        self.assertEqual(box('\033[2m\u276f a suggestion\033[0m'), ('❯', ''))
 
     def test_a_popup_stands_in_the_pane_under_it(self):
         context = {'HERDR_PANE_ID': 'w1:p9',
@@ -1276,10 +1299,11 @@ class Waking(unittest.TestCase):
                 self.assertTrue(said.endswith(f': the agent is {status}'), said)
         self.assertEqual(len(self.deliver(run)[1]), 1)
 
-    def test_a_box_out_of_sight_or_holding_a_line_waits(self):
+    def test_a_box_out_of_sight_holding_a_line_or_in_shell_mode_waits(self):
         run = self.job(*self.FULL)
         for screen, why in (('  scrolled up, far from the box\n', 'is not on screen'),
-                            ('❯ half a sentence\n', 'already holds a line')):
+                            ('❯ half a sentence\n', 'already holds a line'),
+                            ('!\u00a0 \n', 'is in shell mode')):
             with self.subTest(screen=screen):
                 said, prompts = self.deliver(run, screen=screen)
                 self.assertEqual(prompts, [])

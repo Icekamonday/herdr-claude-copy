@@ -4,7 +4,8 @@ A key fires from wherever you stand, and that is as often a shell of the tab
 as the agent itself, so the agent is found from the tab. A line typed there
 goes where you type, so it goes only into a box that can take it: an agent at
 work would queue it behind the turn, a blocked one would take it as the answer
-to its dialog, and a box already holding a draft would take it as its tail.
+to its dialog, a box already holding a draft would take it as its tail, and a
+box in shell mode would run it as a command.
 """
 
 import json
@@ -16,6 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import api
 
 MARK = '❯'          # the mark Claude opens its prompt box with
+# the mark of the box in shell mode, where a line runs as a command. A
+# no-break space follows it, and a plain space follows the ! of the footer
+# that names the mode
+SHELL = '!'
+SHELL_OPENS = SHELL + '\xa0'
 # a styled read carries CSI sequences, whose SGR holds the style, and OSC ones
 ESCAPE = re.compile(r'\x1b\[([0-?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
 # the SGR codes of a background in the eight colors and the eight bright ones;
@@ -56,7 +62,9 @@ def target(panes, standing):
 
 
 def box(screen):
-    """What the prompt box on that screen holds, or None when it is not there.
+    """The mark that the prompt box on that screen opens on, and what the box
+    holds, or None when it is not there. The mark tells the mode: SHELL in
+    shell mode, else MARK, even for a line that opens on a !.
 
     Claude opens its box and every message you have sent with the same mark,
     and draws a sent message on a background. So the box is the lowest mark
@@ -66,9 +74,13 @@ def box(screen):
     its suggestion for the next prompt dim, and typing dismisses it, so the
     box holds only the characters that are not dim.
     """
-    rows = [row for row in screen.splitlines()
-            if ESCAPE.sub('', row).strip().startswith(MARK) and not on_background(row)]
-    return typed(rows[-1]).strip().removeprefix(MARK).strip() if rows else None
+    for row in reversed(screen.splitlines()):
+        plain = ESCAPE.sub('', row).lstrip()
+        mark = MARK if plain.startswith(MARK) else SHELL if plain.startswith(SHELL_OPENS) \
+            else None
+        if mark and not on_background(row):
+            return mark, typed(row).strip().removeprefix(mark).strip()
+    return None
 
 
 def pieces(row):
@@ -124,9 +136,12 @@ def style_after(params, dim, background):
 
 def box_refusal(pane):
     """Why the prompt box of that pane cannot take a line now, or None."""
-    held = box(screen(pane, styled=True))
-    if held is None:
+    found = box(screen(pane, styled=True))
+    if found is None:
         return 'the prompt box is not on screen'
+    mark, held = found
+    if mark == SHELL:
+        return 'the prompt box is in shell mode'
     return 'the prompt box already holds a line' if held else None
 
 

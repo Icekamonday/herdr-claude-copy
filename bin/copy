@@ -936,9 +936,10 @@ def place(agent, text):
     """Put the text in the prompt box of the agent without sending it, or say
     why not.
 
-    A blocked agent would take the text as the answer to its dialog, and a box
-    that holds a draft would take it as its tail. The status is read again,
-    since the agent may have moved on while the picker was open.
+    A blocked agent would take the text as the answer to its dialog, a box
+    that holds a draft would take it as its tail, and a box in shell mode
+    would run it as a command. The status is read again, since the agent may
+    have moved on while the picker was open.
     """
     agent = api.pane(agent['pane_id']) or agent
     if agent.get('agent_status') == 'blocked':

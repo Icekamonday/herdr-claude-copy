@@ -141,8 +141,8 @@ def lock(run, agent):
 def refusal(agent):
     """Why the box of that agent cannot take a line now, or None.
 
-    A turn would queue the line, a dialog would take it as its answer, and a
-    draft would take it as its tail.
+    A turn would queue the line, a dialog would take it as its answer, a
+    draft would take it as its tail, and shell mode would run it as a command.
     """
     status = agent.get('agent_status')
     if status in HELD:
