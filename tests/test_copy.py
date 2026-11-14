@@ -1298,26 +1298,47 @@ class Waking(unittest.TestCase):
         asked = pathlib.Path(log).read_text() if os.path.exists(log) else ''
         return [line for line in asked.splitlines() if line.startswith('agent.prompt')]
 
-    def deliver(self, run, cut=False, ended=None, screen=None, **pane):
+    def deliver(self, run, cut=None, ended=None, screen=None, **pane):
         """One wait for the box, with the agent w2:p1 changed by pane and its
         screen: how the wait ended, and the prompts sent."""
         screens = {} if screen is None else {'w2:p1': screen}
+        # each call stands for the waiter of the run, which writes the summary
+        pathlib.Path(run, 'summary').unlink(missing_ok=True)
         with unittest.mock.patch.dict(self.agent, pane), \
                 unittest.mock.patch.dict(self.screens, screens), stub_log() as log:
             said = self.waking.deliver(run, self.waking.job(run), cut,
                                        time.time() if ended is None else ended)
             return said, self.prompts(log)
 
-    def test_the_wake_tells_how_each_step_ended_and_where_its_files_are(self):
+    def test_the_wake_names_the_summary_first_then_the_files_of_the_steps(self):
         run = self.job(*self.FULL)
         said, prompts = self.deliver(run)
         self.assertEqual(said, 'woke w2:p1')
         self.assertEqual(prompts, [(
             f'agent.prompt w2:p1 The user ran blocks of your answer in a shell of this '
             f'tab, as run 2026-10-28-1, and the run is over. Step 1 ended with rc=2, '
-            f'step 2 with rc=0. The files of step N are in {run}/N: the log of its tool '
-            f'if there is one, then tty.log, its terminal output with the header of '
-            f'script and color codes. Read them, then go on with the task.')])
+            f'step 2 with rc=0. First read {run}/summary: it holds the status of each '
+            f'step and the last lines of its output. If it does not answer, the files of '
+            f'step N are in {run}/N: tty.txt, its terminal output as plain text, and the '
+            f'log of its tool if there is one. Search a long file before you read it. '
+            f'Then continue the task.')])
+        self.assertTrue(pathlib.Path(run, 'summary').is_file())
+
+    def test_a_summary_already_there_is_never_named(self):
+        """A file that the waiter did not write may say anything, or be a link."""
+        run = self.job(*self.FULL)
+        planted = pathlib.Path(self.room, 'planted')
+        planted.write_text('kept\n')
+        os.symlink(planted, os.path.join(run, 'summary'))
+        with stub_log() as log:
+            said = self.waking.deliver(run, self.waking.job(run), None, time.time())
+            prompts = self.prompts(log)
+        self.assertEqual(said, 'woke w2:p1 (a summary was already there)')
+        self.assertEqual(planted.read_text(), 'kept\n')
+        self.assertIn(f'step 2 with rc=0. The files of step N are in {run}/N: the log of its '
+                      f'tool if there is one, then tty.log, its terminal output with the '
+                      f'header of script and color codes. Read them, then go on with the '
+                      f'task.', prompts[0])
 
     def test_a_run_is_over_after_its_last_step_or_a_ctrl_c(self):
         """The run writes DONE right after a Ctrl+C, and a read may fall
@@ -1338,7 +1359,7 @@ class Waking(unittest.TestCase):
     def test_a_ctrl_c_is_told_as_the_end_of_the_run(self):
         _, prompts = self.deliver(self.job('=== START 1', '=== END 1 rc=130', '=== DONE'))
         self.assertIn('and the run is over. Step 1 ended with rc=130, a Ctrl+C, and the run '
-                      'stopped there. The files', prompts[0])
+                      'stopped there. First read', prompts[0])
 
     def test_a_run_whose_process_ended_before_its_end_was_cut(self):
         """The shell closed, and took the run with it."""
@@ -1347,9 +1368,9 @@ class Waking(unittest.TestCase):
         watched = self.waking.watch(gone.pid)
         self.addCleanup(os.close, watched)
         gone.wait()
-        self.assertTrue(self.waking.end(run, watched)[1])
-        _, prompts = self.deliver(run, cut=True)
-        self.assertIn('Step 1 ended with rc=0, and the shell closed during step 2. The files',
+        self.assertEqual(self.waking.end(run, watched)[1], 2)
+        _, prompts = self.deliver(run, cut=2)
+        self.assertIn('Step 1 ended with rc=0, and the shell closed during step 2. First read',
                       prompts[0])
 
     def test_a_run_alive_ends_at_its_last_mark_and_a_run_gone_at_once(self):
@@ -1358,11 +1379,11 @@ class Waking(unittest.TestCase):
         watched = self.waking.watch(os.getpid())
         self.addCleanup(os.close, watched)
         self.assertFalse(self.waking.exited(watched))
-        self.assertFalse(self.waking.end(self.job(*self.FULL), watched)[1])
+        self.assertIsNone(self.waking.end(self.job(*self.FULL), watched)[1])
         gone = subprocess.Popen(['true'])
         gone.wait()
         self.assertIsNone(self.waking.watch(gone.pid))
-        self.assertTrue(self.waking.end(self.job('=== START 1'), None)[1])
+        self.assertEqual(self.waking.end(self.job('=== START 1'), None)[1], 1)
 
     def test_an_agent_at_work_or_on_a_dialog_gets_the_wake_after(self):
         """A line typed during a turn waits behind it, and one typed under a
@@ -1442,9 +1463,9 @@ class Waking(unittest.TestCase):
         wait behind it."""
         first, second = self.job(*self.FULL), self.job(*self.FULL, n=2)
         with unittest.mock.patch.dict(self.agent), stub_log() as log:
-            self.assertEqual(self.waking.deliver(first, self.waking.job(first), False,
+            self.assertEqual(self.waking.deliver(first, self.waking.job(first), None,
                                                  time.time()), 'woke w2:p1')
-            said = self.waking.deliver(second, self.waking.job(second), False, time.time())
+            said = self.waking.deliver(second, self.waking.job(second), None, time.time())
             self.assertTrue(said.endswith(': the agent is working'), said)
             prompts = self.prompts(log)
         self.assertEqual(len(prompts), 1)
@@ -1481,13 +1502,21 @@ class Waking(unittest.TestCase):
         import running
         with stub_log() as log:
             run = running.prepare(self.agent, {'pane_id': 'w2:p2'}, 'sh')
-            out = enter(running.typed(run, ['exit 3', 'echo two']), self.room)
+            out = enter(running.typed(run, ['echo one; exit 3',
+                                            r'printf "\033[32mtwo\033[0m\n"']), self.room)
             said = self.wait_for(run)
             prompts = self.prompts(log)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertTrue(said.endswith(' woke w2:p1\n'), said)
         self.assertEqual(len(prompts), 1)
-        self.assertIn('Step 1 ended with rc=3, step 2 with rc=0. The files', prompts[0])
+        self.assertIn('Step 1 ended with rc=3, step 2 with rc=0. First read', prompts[0])
+        self.assertEqual(pathlib.Path(run, 'summary').read_text(),
+                         'step 1 rc=3, 1 line in 1/tty.txt (4 bytes). The last line:\n'
+                         '  one\n'
+                         'step 2 rc=0, 1 line in 2/tty.txt (4 bytes). The last line:\n'
+                         '  two\n')
+        self.assertEqual(pathlib.Path(run, '2', 'tty.txt').read_text(), 'two\n')
+        self.assertEqual(os.stat(os.path.join(run, 'summary')).st_mode & 0o777, 0o600)
 
     def test_the_waiter_outlives_a_shell_that_closes(self):
         """A pane that closes kills what its shell runs: the run, and not the
@@ -1508,7 +1537,7 @@ class Waking(unittest.TestCase):
             said = self.wait_for(run)
             prompts = self.prompts(log)
         self.assertTrue(said.endswith(' woke w2:p1\n'), said)
-        self.assertIn('and the run is over. The shell closed during step 1. The files',
+        self.assertIn('and the run is over. The shell closed during step 1. First read',
                       prompts[0])
 
     def test_a_run_gone_before_its_waiter_starts_wakes_its_agent(self):
@@ -1524,6 +1553,150 @@ class Waking(unittest.TestCase):
         self.assertEqual(started.returncode, 0)
         self.assertTrue(said.endswith(' woke w2:p1\n'), said)
         self.assertIn('The shell closed during step 1.', prompts[0])
+
+
+def script_log(body, rc=0):
+    """A tty.log as script of util-linux writes it around the output of a step."""
+    return (b'Script started on 2026-11-10 19:54:00+01:00 [COMMAND="make" '
+            b'<not executed on terminal>]\n' + body
+            + f'\nScript done on 2026-11-10 19:54:01+01:00 [COMMAND_EXIT_CODE="{rc}"]\n'
+            .encode())
+
+
+LONG = b''.join(b'line %04d of a long output\r\n' % n for n in range(400))
+
+
+class Summing(unittest.TestCase):
+    """The summary of a run, and the plain copy of the output of each step."""
+
+    def setUp(self):
+        self.run = tempfile.mkdtemp(prefix='herdr-summary-')
+        self.addCleanup(shutil.rmtree, self.run)
+        import summary
+        self.summary = summary
+
+    def steps(self, *logs, ends=None, cut=None):
+        """A run whose step n wrote the n-th log, None for a step with no
+        tty.log, and its summary."""
+        for n, log in enumerate(logs, 1):
+            os.makedirs(os.path.join(self.run, str(n)), exist_ok=True)
+            if log is not None:
+                pathlib.Path(self.run, str(n), 'tty.log').write_bytes(log)
+        ends = [(str(n), '0') for n in range(1, len(logs) + 1)] if ends is None else ends
+        written = self.summary.write(self.run, {'steps': len(logs), 'ends': ends}, cut)
+        self.assertTrue(written)
+        said = pathlib.Path(self.run, 'summary').read_text()
+        self.assertLessEqual(len(said.encode()), self.summary.SIZE)
+        return said
+
+    def text(self, n):
+        return pathlib.Path(self.run, str(n), 'tty.txt').read_text()
+
+    def test_the_copy_drops_the_frame_of_script_and_the_escapes(self):
+        """Bytes seen in real logs: SGR, erase, cursor and mode sequences, an
+        OSC title, keypad modes, a charset, a progress bar and a backspace."""
+        body = (b'\x1b]0;make\x07\x1b[?2004l\x1b=\x1b(B\x1b[1;31merror\x1b[0m: no rule\x1b[K\r\n'
+                b'10%\r50%\r100%\r\n'
+                b'tab\there \x0f\x1b[2Aa_\x08b \r\n'
+                b'\x1b7caf\xc3\xa9\x08e\x1b8\r\n'
+                b'\r\n')
+        said = self.steps(script_log(body))
+        self.assertEqual(self.text(1), 'error: no rule\n100%\ntab\there ab\ncafe\n\n')
+        self.assertEqual(said, 'step 1 rc=0, 5 lines in 1/tty.txt (38 bytes). The last 4:\n'
+                               '  error: no rule\n  100%\n  tab\there ab\n  cafe\n')
+
+    def test_a_log_cut_by_a_closed_shell_keeps_its_last_line(self):
+        """A shell that closes kills script before its footer, and maybe
+        before its header."""
+        said = self.steps(b'Script started on 2026-11-10 [COMMAND="make"]\nbuilding\r\nhalf',
+                          b'', None, ends=[('1', '0')], cut=2)
+        self.assertEqual(self.text(1), 'building\nhalf\n')
+        self.assertEqual(self.text(2), '')
+        self.assertEqual(said, 'step 1 rc=0, 2 lines in 1/tty.txt (14 bytes). The last 2:\n'
+                               '  building\n  half\n'
+                               'step 2, the shell closed during this step, no output\n'
+                               'step 3, not run\n')
+
+    def test_the_frame_of_script_goes_in_any_language(self):
+        """util-linux translates the header and the footer of script, and
+        writes no blank line before the footer when the output ends on no
+        newline."""
+        said = self.steps('Script démarré sur 2026-11-13 21:26:33+01:00 [COMMAND="make"]\n'
+                          'ok\r\n\nScript terminé sur 2026-11-13 21:26:34+01:00 '
+                          '[COMMAND_EXIT_CODE="0"]\n'.encode(),
+                          script_log(b'[1/2] built\r\n^C', rc=130),
+                          ends=[('1', '0'), ('2', '130')])
+        self.assertEqual(self.text(1), 'ok\n')
+        self.assertEqual(self.text(2), '[1/2] built\n^C\n')
+        self.assertEqual(said, 'step 1 rc=0, 1 line in 1/tty.txt (3 bytes). The last line:\n'
+                               '  ok\n'
+                               'step 2 rc=130, 2 lines in 2/tty.txt (15 bytes). The last 2:\n'
+                               '  [1/2] built\n  ^C\n')
+
+    def test_a_step_whose_shell_closed_takes_its_part_first(self):
+        """The step that the shell cut holds the last output, as a failed one
+        does."""
+        said = self.steps(script_log(LONG), LONG, ends=[('1', '0')], cut=2)
+        passed, cut = said.split('\nstep 2')
+        self.assertEqual(passed.count('\n  line'), 0)
+        self.assertGreater(cut.count('\n  line'), 60)
+
+    def test_a_step_with_no_output_or_never_run_says_so(self):
+        said = self.steps(script_log(b'\r\n\r\n', rc=1), None,
+                          ends=[('1', '1'), ('2', '130')])
+        self.assertEqual(said, 'step 1 rc=1, no output\nstep 2 rc=130, no output\n')
+
+    def test_the_blank_lines_at_the_end_of_a_step_are_not_shown(self):
+        said = self.steps(script_log(b'one\r\n\r\ntwo\r\n\r\n\r\n'))
+        self.assertTrue(said.endswith('The last 3:\n  one\n\n  two\n'), said)
+
+    def test_the_failed_steps_take_their_part_first(self):
+        """The output of a step that passed is shown only with what the failed
+        steps leave."""
+        said = self.steps(script_log(LONG), script_log(LONG, rc=2), script_log(b'done\r\n'),
+                          ends=[('1', '0'), ('2', '2'), ('3', '0')])
+        heads = [row for row in said.splitlines() if row.startswith('step')]
+        self.assertEqual([row.split(',')[0] for row in heads],
+                         ['step 1 rc=0', 'step 2 rc=2', 'step 3 rc=0'])
+        self.assertTrue(heads[0].endswith('(11 kB)'), heads[0])
+        self.assertIn('  line 0399 of a long output\nstep 3', said)
+        self.assertGreater(said.count('\n  line'), 60)
+
+    def test_the_steps_that_passed_share_what_is_left_in_equal_parts(self):
+        """A step that needs less than its part leaves the rest to the others."""
+        said = self.steps(script_log(LONG), script_log(b'done\r\n'), script_log(LONG))
+        shown = [part.count('\n  line') for part in said.split('\nstep ')]
+        self.assertEqual(shown[1], 0)
+        self.assertLessEqual(abs(shown[0] - shown[2]), 1)
+        self.assertGreater(shown[0], 25)
+        self.assertEqual(self.summary.shares({'a': 10, 'b': 500, 'c': 500}, 1000),
+                         ({'a': 10, 'b': 495, 'c': 495}, 0))
+
+    def test_a_last_line_too_long_keeps_its_start_cut_on_a_character(self):
+        said = self.steps(script_log('é'.encode() * 3000 + b'\r\n'))
+        last = said.splitlines()[-1]
+        self.assertTrue(last.startswith('  éé') and last.endswith('é [...]'), last[-20:])
+
+    def test_a_copy_already_there_is_never_written_through(self):
+        """A link planted at tty.txt would make the waiter write over a file
+        of the user."""
+        planted = pathlib.Path(self.run, 'planted')
+        planted.write_text('kept\n')
+        os.mkdir(os.path.join(self.run, '1'))
+        os.symlink(planted, os.path.join(self.run, '1', 'tty.txt'))
+        said = self.steps(script_log(b'ok\r\n'))
+        self.assertEqual(planted.read_text(), 'kept\n')
+        self.assertEqual(said, 'step 1 rc=0, 1/tty.txt was already there: read 1/tty.log. '
+                               'The last line:\n  ok\n')
+
+    def test_the_other_files_of_a_step_are_named_with_their_size(self):
+        os.mkdir(os.path.join(self.run, '1'))
+        pathlib.Path(self.run, '1', 'tool.log').write_bytes(b'x' * 2_100_000)
+        pathlib.Path(self.run, '1', 'report.xml').write_bytes(b'<x/>')
+        said = self.steps(script_log(b'ok\r\n'))
+        self.assertTrue(said.startswith(
+            'step 1 rc=0, 1 line in 1/tty.txt (3 bytes); 1/ also holds report.xml '
+            '(4 bytes), tool.log (2.1 MB). The last line:\n'), said)
 
 
 class Resolution(unittest.TestCase):

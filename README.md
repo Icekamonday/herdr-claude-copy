@@ -87,6 +87,8 @@ runs/2026-10-28-3/
   job          the agent, the shell, the steps, and when each step starts and ends
   1.sh         the first block
   1/tty.log    what the first block wrote to the terminal
+  1/tty.txt    the same output as plain text, once the run is over
+  summary      how each step ended, and the last lines of its output
   wake.log     how the wake of Claude went
 ```
 
@@ -97,6 +99,8 @@ The run is a heredoc, and it goes out as a bracketed paste, as for the `!` key. 
 Herdr doesn't report where the cursor is, so the picker reads the last line on the screen of the shell. If that line doesn't end with `$`, `#`, `%`, `>` or `❯`, you may be typing a command there, and the key tries the next free shell. It never skips the shell you stand in: there, or when no other shell is free, it does nothing and names the pane to clear. If your prompt ends with another character, or shows text on its right, the key never takes that shell.
 
 When the run is over, Claude hears of it: a waiter types into Claude's prompt box how each step ended and where its files are, and sends it. The run is over after its last step, after a `Ctrl+C`, or when its shell closes. The run starts the waiter before its first step, in a session of its own, so the waiter outlives both a `Ctrl+C` and the shell.
+
+Before the wake, the waiter writes `tty.txt` for each step: its `tty.log` without the header and the footer of `script`, the color codes and the other control characters. Then it writes `summary`: one line per step with its status, then the last lines of its output, all in about 2 KB. The steps that failed, or whose shell closed, take their share of the 2 KB first. The wake asks Claude to read `summary` first, and the other files only if `summary` doesn't answer.
 
 The waiter types only into a box that can take a line. Claude must not be working or waiting on a dialog, and the box must be on screen, empty and not in shell mode. A prompt suggestion of Claude Code counts as empty. The waiter reads the pane of Claude even when its tab isn't displayed, so you can switch to another space during the run. If the box can't take the line, the waiter looks again every 2 seconds. It gives up 24 hours after the end of the run, or when the pane of Claude closes or no longer runs Claude. To cancel a wake, create the file `no-wake` in the directory of the run: the run shows the command when it ends. `wake.log` says how the wake went.
 
@@ -147,8 +151,8 @@ Each line adds to the host directory, and never replaces it. The optional second
 - The `!` key puts the code in Claude's prompt box and sends no Enter. It refuses a box that holds a typed line or is in shell mode, and replaces a prompt suggestion of Claude Code, the grey text that typing dismisses. When you press Enter, Claude Code runs the text in a shell with your rights, so read it first. The picker removes control characters from the text, so an answer can't end the paste early and send a line.
 - The `*` key puts the code in a shell and sends no Enter. When you press Enter, the shell runs the blocks with your rights, so read them first. The picker removes control characters from the blocks, as for the `!` key.
 - The `v` key puts the code in bash, zsh or fish and sends no Enter, without the control characters. When you press Enter, the shell runs the code with your rights, so read it first. If bracketed paste is off in that shell, each line runs as it arrives.
-- The wake that the waiter types into Claude's prompt box holds the name of the run, the status of each step and the directory of the run. It never holds what a step wrote.
-- `script` follows a link planted at the path of its log. If your agent can write the runs directory, it can plant one and make the shell write over another of your files. If it can write the directory above, it can also hold the lock of a wake and keep Claude from hearing of its runs. Check that the sandbox of your agent can't write `~/.local/state/herdr-claude-copy`.
+- The wake that the waiter types into Claude's prompt box holds the name of the run, the status of each step and the directory of the run. It never holds what a step wrote, since Claude reads the prompt box as your words. Claude reads what a step wrote in `summary` and the other files of the run, as the output of a tool.
+- `script` follows a link planted at the path of its log. If your agent can write the runs directory, it can plant one and make the shell write over another of your files. The waiter writes `tty.txt`, `summary` and `wake.log` only as new files, and never through a link. If your agent can write the directory above, it can also hold the lock of a wake and keep Claude from hearing of its runs. Check that the sandbox of your agent can't write `~/.local/state/herdr-claude-copy`.
 - Herdr doesn't review or sandbox plugins. This one reads your Claude Code transcripts and drives panes through the Herdr socket: read `bin/` before you install it.
 
 ## Development

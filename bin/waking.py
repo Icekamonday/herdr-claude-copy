@@ -5,7 +5,8 @@
 The run starts this before its first step, and this leaves the session of the
 shell at once. A Ctrl+C or a shell that closes then ends the run and never the
 wait, so the agent hears of both. The wait has two halves: the end of the run,
-then a prompt box that can take a line. wake.log, in the directory of the
+then a prompt box that can take a line. Between the two, the waiter writes the
+summary of the run, which the wake names. wake.log, in the directory of the
 run, says how the wait ended.
 
 Claude arms no Monitor on a run, so this wake is how it learns that its
@@ -22,6 +23,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import api
 import prompting
+import summary
 
 TICK = 1                    # how often the end of a run, or the turn of a wake, is looked for
 HOLD = 2                    # how often a held wake looks at the box again
@@ -86,11 +88,12 @@ def stopped(ends):
     return bool(ends) and ends[-1][1] == CTRL_C
 
 
-def wake_text(run, job, cut):
+def wake_text(run, job, cut, summed):
     """The line that tells an agent how the steps of its run ended, and where
     their files are, enough to read a step with no skill.
 
-    With cut, the shell of the run closed before the run reached its end.
+    Cut is the step during which the shell of the run closed, or None. With
+    summed, the summary of the run is written, and the agent reads it first.
     """
     ends = job['ends']
     said = ', '.join(f'step {step} {"ended with" if n == 0 else "with"} rc={rc}'
@@ -98,26 +101,33 @@ def wake_text(run, job, cut):
     if stopped(ends):
         said += ', a Ctrl+C, and the run stopped there'
     elif cut:
-        closed = f'the shell closed during step {len(ends) + 1}'
+        closed = f'the shell closed during step {cut}'
         said = f'{said}, and {closed}' if said else closed
     said = said[:1].upper() + said[1:]
-    return (f'The user ran blocks of your answer in a shell of this tab, as run '
-            f'{os.path.basename(run)}, and the run is over. {said}. The files of step N '
-            f'are in {os.path.join(run, "N")}: the log of its tool if there is one, then '
-            f'tty.log, its terminal output with the header of script and color codes. '
-            f'Read them, then go on with the task.')
+    told = (f'The user ran blocks of your answer in a shell of this tab, as run '
+            f'{os.path.basename(run)}, and the run is over. {said}. ')
+    files = os.path.join(run, 'N')
+    if not summed:
+        return told + (f'The files of step N are in {files}: the log of its tool if there '
+                       f'is one, then tty.log, its terminal output with the header of '
+                       f'script and color codes. Read them, then go on with the task.')
+    return told + (f'First read {os.path.join(run, summary.NAME)}: it holds the status of '
+                   f'each step and the last lines of its output. If it does not answer, '
+                   f'the files of step N are in {files}: tty.txt, its terminal output as '
+                   f'plain text, and the log of its tool if there is one. Search a long '
+                   f'file before you read it. Then continue the task.')
 
 
 def end(run, fd):
-    """Wait until the run is over, and return its job, and whether its shell
-    closed first."""
+    """Wait until the run is over, and return its job, and the step during
+    which its shell closed, or None."""
     while True:
         # looked at before the job, so that a run found ended has written
         # all its marks
         gone = exited(fd)
         found = job(run)
         if over(found) or gone:
-            return found, not over(found)
+            return found, None if over(found) else len(found['ends']) + 1
         time.sleep(TICK)
 
 
@@ -185,9 +195,19 @@ def knock(pane, text):
     return f'woke {pane}', None
 
 
+def summarize(run, found, cut):
+    """Write the summary of a run that is over, and return why the wake cannot
+    name it, or None."""
+    try:
+        return None if summary.write(run, found, cut) else 'a summary was already there'
+    except OSError as why:
+        return f'no summary: {why}'
+
+
 def deliver(run, found, cut, ended):
-    """Type the wake into the box of the agent that the run names, once the box
-    can take it, and say how the wait ended.
+    """Write the summary of the run, then type the wake into the box of the
+    agent that the run names, once the box can take it. Say how the wait
+    ended.
 
     A refused prompt and a lost reply are both tried again. A refused one
     typed nothing. A lost one may have typed the wake, which then comes twice:
@@ -195,17 +215,24 @@ def deliver(run, found, cut, ended):
     """
     if not found['ends'] and not cut:
         return 'the run has no step, and nothing to tell'
-    text = wake_text(run, found, cut)
+    missing = summarize(run, found, cut)
+    said = wake(run, found['agent'], wake_text(run, found, cut, missing is None), ended)
+    return said + (f' ({missing})' if missing else '')
+
+
+def wake(run, agent, text, ended):
+    """Type that text into the box of the agent of the run, once the box can
+    take it, and say how the wait ended."""
     why = None
     while time.time() < ended + GIVE_UP:
         if os.path.exists(os.path.join(run, QUIET)):
             return f'{QUIET} found, no wake'
-        held = lock(run, found['agent'])
+        held = lock(run, agent)
         if held is None:
             why = 'another wake of this agent was on its way'
         else:
             try:
-                said, why = knock(found['agent'], text)
+                said, why = knock(agent, text)
             finally:
                 os.close(held)
             if said:
