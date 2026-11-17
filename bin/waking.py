@@ -208,10 +208,6 @@ def deliver(run, found, cut, ended):
     """Write the summary of the run, then type the wake into the box of the
     agent that the run names, once the box can take it. Say how the wait
     ended.
-
-    A refused prompt and a lost reply are both tried again. A refused one
-    typed nothing. A lost one may have typed the wake, which then comes twice:
-    a double wake costs a turn, and a lost one leaves Claude waiting.
     """
     if not found['ends'] and not cut:
         return 'the run has no step, and nothing to tell'
@@ -222,7 +218,12 @@ def deliver(run, found, cut, ended):
 
 def wake(run, agent, text, ended):
     """Type that text into the box of the agent of the run, once the box can
-    take it, and say how the wait ended."""
+    take it, and say how the wait ended.
+
+    A refused prompt and a lost reply are both tried again. A refused one
+    typed nothing. A lost one may have typed the wake, which then comes twice:
+    a double wake costs a turn, and a lost one leaves Claude waiting.
+    """
     why = None
     while time.time() < ended + GIVE_UP:
         if os.path.exists(os.path.join(run, QUIET)):
