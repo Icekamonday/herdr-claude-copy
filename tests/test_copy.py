@@ -1672,7 +1672,7 @@ class Summing(unittest.TestCase):
         self.assertEqual(self.summary.shares({'a': 10, 'b': 500, 'c': 500}, 1000),
                          ({'a': 10, 'b': 495, 'c': 495}, 0))
 
-    def test_a_last_line_too_long_keeps_its_start_cut_on_a_character(self):
+    def test_a_last_line_too_long_keeps_its_start_truncated_between_characters(self):
         said = self.steps(script_log('é'.encode() * 3000 + b'\r\n'))
         last = said.splitlines()[-1]
         self.assertTrue(last.startswith('  éé') and last.endswith('é [...]'), last[-20:])

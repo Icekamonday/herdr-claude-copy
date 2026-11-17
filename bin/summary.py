@@ -20,7 +20,7 @@ NAME = 'summary'
 # lines leave
 SIZE = 2048
 INDENT = b'  '
-CUT = b' [...]'
+TRUNCATED = b' [...]'
 SHORTEST = 20               # the shortest start of a line worth showing alone
 FILES = 5                   # how many other files of a step the summary names
 # a control string, such as an OSC, up to its BEL or its ST
@@ -137,7 +137,7 @@ def output(step):
 
 
 def size(n):
-    """A number of bytes, as a reader weighs it."""
+    """A number of bytes, in the unit that keeps it short: bytes, kB or MB."""
     if n < 1000:
         return f'{n} byte{"" if n == 1 else "s"}'
     if n < 999_500:
@@ -175,7 +175,8 @@ def shares(needs, budget):
 def last(tail, budget):
     """The last lines of a tail that fit in budget bytes of the summary.
 
-    If even the last line does not fit, its start does, cut on a character.
+    If even the last line does not fit, its start does, truncated between two
+    characters.
     """
     shown, cost = [], 0
     for line in reversed(tail):
@@ -183,12 +184,12 @@ def last(tail, budget):
             break
         shown.append(line)
         cost += weight(line)
-    room = budget - len(INDENT) - len(CUT) - 1
+    room = budget - len(INDENT) - len(TRUNCATED) - 1
     if not shown and tail and room >= SHORTEST:
         line = tail[-1]
         while room and line[room] & 0xc0 == 0x80:
             room -= 1
-        shown.append(line[:room] + CUT)
+        shown.append(line[:room] + TRUNCATED)
     shown.reverse()
     while shown and not shown[0]:
         shown.pop(0)
