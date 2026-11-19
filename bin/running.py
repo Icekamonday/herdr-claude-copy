@@ -64,7 +64,8 @@ if ! (set -C; : > "$run/job") 2>/dev/null; then
     printf 'this run has already started: press %s in the picker for a new one\\n' {again} >&2
     exit 1
 fi
-mark() {{ printf '%s\\n' "$*" >> "$run/job"; printf '%s\\n' "$*"; }}
+# the marks are for the waiter alone: the screen of the run has lines of its own
+mark() {{ printf '%s\\n' "$*" >> "$run/job"; }}
 printf 'agent %s\\nshell %s\\n' {agent} {shell} >> "$run/job"
 # every block is read before the first step runs, since a step takes the
 # terminal as its input and the blocks come on the input of this script
@@ -76,7 +77,7 @@ while IFS= read -r line; do
     esac
     if [ -z "$open" ]; then
         mkdir -m 700 "$run/$n"
-        printf 'step %s\\n' "$n" >> "$run/job"
+        mark "step $n"
         open=1
     fi
     printf '%s\\n' "$line" >> "$run/$n.sh"
@@ -91,9 +92,35 @@ else
 fi
 input=/dev/null
 if (exec < /dev/tty) 2>/dev/null; then input=/dev/tty; fi
+dim='' green='' red='' yellow='' plain=''
+if [ -t 1 ] && [ -z "$NO_COLOR" ] && [ "${{TERM:-dumb}}" != dumb ]; then
+    esc=$(printf '\\033')
+    dim="${{esc}}[2m" green="${{esc}}[32m" red="${{esc}}[31m" yellow="${{esc}}[33m"
+    plain="${{esc}}[0m"
+fi
+case ${{LC_ALL:-${{LC_CTYPE:-$LANG}}}} in
+    *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*)
+        next='▸' ok='✔' ko='✘' rule='─' wide=1;;
+    *) next='>' ok=ok ko=KO rule=- wide=2;;
+esac
+columns() {{
+    size=$(stty size 2>/dev/null < /dev/tty) || size='0 80'
+    echo "${{size#* }}"
+}}
+# the first line of step $1 that holds text, in the columns that the head of its
+# line leaves out of $2: the $3 columns of the glyph and the status, " step <n>"
+# and two spaces. printf counts bytes, so a line that is not ASCII ends early,
+# never late. A tab, which the terminal would widen, becomes a space
+label() {{
+    width=$(($2 - $3 - 8 - ${{#1}}))
+    if [ "$width" -lt 1 ]; then return; fi
+    printf "%.${{width}}s" "$(sed '/[^[:space:]]/!d;q' "$run/$1.sh" | tr '\\t' ' ')"
+}}
 n=1
 while [ -f "$run/$n.sh" ]; do
     mark "=== START $n"
+    printf '%s%s step %s  %s%s\\n' "$dim" "$next" "$n" \\
+        "$(label "$n" "$(columns)" 1)" "$plain"
     # under script a step writes to a terminal, where a pager waits for keys
     # and leaves one screen in the log. Git, man and systemd each read their
     # own variable before PAGER, and a block that sets one again keeps it.
@@ -104,14 +131,42 @@ while [ -f "$run/$n.sh" ]; do
         "$run/$n/tty.log" < "$input"
     rc=$?
     mark "=== END $n rc=$rc"
+    # the status of each step, for the end of the run: sh has no array
+    set -- "$@" "$rc"
+    echo
     # a step that Ctrl+C stopped: the user wants the whole run stopped, and
     # not only its step
     if [ "$rc" -eq {ctrl_c} ]; then break; fi
     n=$((n + 1))
 done
 mark "=== DONE"
+cols=$(columns)
+name=${{run##*/}}
+title="$rule$rule run $name "
+i=$((8 + ${{#name}}))
+while [ "$i" -lt "$cols" ]; do title="$title$rule"; i=$((i + 1)); done
+printf '%s%s%s\\n' "$dim" "$title" "$plain"
+passed=0 failed=0 skipped=0
+n=1
+while [ -f "$run/$n.sh" ]; do
+    eval "rc=\\${{$n-}}"
+    if [ -z "$rc" ]; then
+        glyph="$yellow-" status='' skipped=$((skipped + 1))
+    elif [ "$rc" -eq 0 ]; then
+        glyph="$green$ok" status='' passed=$((passed + 1))
+    else
+        glyph="$red$ko" status="  rc=$rc" failed=$((failed + 1))
+    fi
+    printf '%s step %s%s%s  %s\\n' "$glyph" "$n" "$status" "$plain" \\
+        "$(label "$n" "$cols" $((wide + ${{#status}})))"
+    n=$((n + 1))
+done
+counts="$passed passed, $failed failed"
+if [ "$skipped" -gt 0 ]; then counts="$counts, $skipped not run"; fi
+echo "$counts"
 if [ -n "$waiting" ]; then
-    echo "Claude hears of this run once its prompt box is free. To cancel, run: touch $run/{quiet}"
+    echo "Claude hears of this run once its prompt box is free. To cancel, run:"
+    echo "touch $run/{quiet}"
 fi
 '''
 
@@ -232,7 +287,7 @@ def prepare(agent, shell, name, day=None, again='*'):
     # the user's alone, whatever made it first
     os.chmod(os.path.dirname(root), 0o700)
     run = _fresh(root, day or datetime.date.today().isoformat())
-    with open(os.path.join(run, 'run'), 'x') as fp:
+    with open(os.path.join(run, 'run'), 'x', encoding='utf-8') as fp:
         fp.write(RUNNER.format(run=shlex.quote(run), agent=shlex.quote(agent['pane_id']),
                                shell=shlex.quote(shell['pane_id']), name=shlex.quote(name),
                                step=STEP, waiter=shlex.join(WAITER), again=shlex.quote(again),
