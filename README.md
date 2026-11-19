@@ -20,6 +20,8 @@ A mouse copy takes the screen grid. Claude Code draws a code block two columns i
 herdr plugin install Icekamonday/herdr-claude-copy
 ```
 
+On Herdr 0.9.4 or later, `herdr plugin update herdr-claude-copy` updates the plugin. On an older Herdr, run the install command again.
+
 A plugin manifest can't declare a key, so add the binding to `~/.config/herdr/config.toml`:
 
 ```toml
