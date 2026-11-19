@@ -1001,7 +1001,7 @@ class PromptBox(unittest.TestCase):
         self.assertIsNone(self.prompting.target(self.TAB, 'p3'))
 
 
-def enter(text, room):
+def enter(text, room, stdout=subprocess.PIPE):
     """The Enter of the user, in a session with no terminal, so that no step
     takes the terminal of the suite as its input.
 
@@ -1009,9 +1009,9 @@ def enter(text, room):
     of another shell: a step runs in the shell of the pane.
     """
     return subprocess.run(text + '\n', shell=True, check=False, cwd=room,
-                          stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                          timeout=30, env=dict(os.environ, SHELL='/bin/false'),
-                          start_new_session=True)
+                          stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE,
+                          encoding='utf-8', timeout=30,
+                          env=dict(os.environ, SHELL='/bin/false'), start_new_session=True)
 
 
 class Running(unittest.TestCase):
@@ -1258,11 +1258,89 @@ class Running(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('script'), 'no script')
     def test_the_end_of_a_run_says_how_to_cancel_its_wake(self):
+        run, screen = self.screen('echo one')
+        self.assertEqual(screen.splitlines()[-2:],
+                         ['Claude hears of this run once its prompt box is free. To cancel, run:',
+                          f'touch {run}/no-wake'])
+
+    def screen(self, *blocks, **env):
+        """A run of these blocks, and what its output showed, with no carriage
+        return."""
         run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh')
-        out = self.enter(self.running.typed(run, ['echo one']))
-        self.assertEqual(out.stdout.splitlines()[-1],
-                         f'Claude hears of this run once its prompt box is free. '
-                         f'To cancel, run: touch {run}/no-wake')
+        with unittest.mock.patch.dict(os.environ, env):
+            out = self.enter(self.running.typed(run, list(blocks)))
+        return run, out.stdout.replace('\r\n', '\n')
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_the_screen_names_each_step_then_tells_how_each_one_ended(self):
+        """The glyphs need a UTF-8 locale. The screen shows no mark of the job
+        file, and a log no line of the screen."""
+        for locale, (next_, ok, ko, rule) in {'C.UTF-8': ('▸', '✔', '✘', '─'),
+                                             'C': ('>', 'ok', 'KO', '-')}.items():
+            with self.subTest(locale):
+                run, screen = self.screen('echo one', 'echo two; exit 2', 'echo three',
+                                          LC_ALL=locale)
+                name = os.path.basename(run)
+                self.assertEqual(screen, f'''\
+{next_} step 1  echo one
+one
+
+{next_} step 2  echo two; exit 2
+two
+
+{next_} step 3  echo three
+three
+
+{rule * 2} run {name} {rule * (80 - 8 - len(name))}
+{ok} step 1  echo one
+{ko} step 2  rc=2  echo two; exit 2
+{ok} step 3  echo three
+2 passed, 1 failed
+Claude hears of this run once its prompt box is free. To cancel, run:
+touch {run}/no-wake
+''')
+                self.assertNotIn('step', pathlib.Path(run, '2', 'tty.log').read_text())
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_a_step_after_a_ctrl_c_shows_that_it_did_not_run(self):
+        _, screen = self.screen('kill -INT $$', 'echo never', LC_ALL='C')
+        self.assertEqual(screen.splitlines()[-5:-2], ['KO step 1  rc=130  kill -INT $$',
+                                                      '- step 2  echo never',
+                                                      '0 passed, 1 failed, 1 not run'])
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_a_step_shows_its_first_line_of_text_in_the_width_of_the_terminal(self):
+        """With no terminal, the width is 80 columns. A tab is one byte, but the
+        terminal widens it."""
+        long = '\techo ' + 'x' * 100
+        _, screen = self.screen('\n' + long, LC_ALL='C')
+        lines = screen.splitlines()
+        self.assertEqual(lines[0], '> step 1  ' + long.replace('\t', ' ')[:70])
+        self.assertIn('ok step 1  ' + long.replace('\t', ' ')[:69], lines)
+
+    @unittest.skipUnless(shutil.which('script'), 'no script')
+    def test_the_screen_takes_colors_on_a_terminal_unless_no_color_is_set(self):
+        """The run still has no controlling terminal, so no step takes the input
+        of the suite."""
+        def shown(*blocks, **env):
+            run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh')
+            main, side = os.openpty()
+            with unittest.mock.patch.dict(os.environ, env, TERM='xterm', LC_ALL='C.UTF-8'):
+                enter(self.running.typed(run, list(blocks)), self.room, stdout=side)
+            os.close(side)
+            screen = b''
+            with contextlib.suppress(OSError):  # EIO: the terminal has no writer left
+                while chunk := os.read(main, 4096):
+                    screen += chunk
+            os.close(main)
+            return screen.decode()
+
+        screen = shown('echo one', 'exit 2')
+        for line in ('\x1b[2m▸ step 1  echo one\x1b[0m', '\x1b[32m✔ step 1\x1b[0m  echo one',
+                     '\x1b[31m✘ step 2  rc=2\x1b[0m  exit 2'):
+            self.assertIn(line, screen)
+        self.assertNotIn('\x1b', shown('echo one', NO_COLOR='1'))
+
 
     @unittest.skipUnless(shutil.which('script'), 'no script')
     def test_a_waiter_that_cannot_start_stops_no_step(self):
