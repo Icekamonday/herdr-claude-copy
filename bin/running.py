@@ -94,8 +94,14 @@ if (exec < /dev/tty) 2>/dev/null; then input=/dev/tty; fi
 n=1
 while [ -f "$run/$n.sh" ]; do
     mark "=== START $n"
-    SHELL="$step_shell" STEP_DIR="$run/$n" \\
-        script -qefc "$(cat "$run/$n.sh")" "$run/$n/tty.log" < "$input"
+    # under script a step writes to a terminal, where a pager waits for keys
+    # and leaves one screen in the log. Git, man and systemd each read their
+    # own variable before PAGER, and a block that sets one again keeps it.
+    # The command exports the four variables after the startup files that the
+    # shell reads even under -c, such as ~/.zshenv
+    SHELL="$step_shell" STEP_DIR="$run/$n" script -qefc \\
+        "export PAGER=cat GIT_PAGER=cat MANPAGER=cat SYSTEMD_PAGER=cat; $(cat "$run/$n.sh")" \\
+        "$run/$n/tty.log" < "$input"
     rc=$?
     mark "=== END $n rc=$rc"
     # a step that Ctrl+C stopped: the user wants the whole run stopped, and
