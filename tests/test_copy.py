@@ -1170,10 +1170,10 @@ class Running(unittest.TestCase):
         self.assertIn('add nosuchsh to the PATH', out.stderr)
         self.assertEqual(os.listdir(run), ['run'])
 
-    def start(self, *blocks, edit=lambda text: text):
-        """A run of these blocks, typed, edited by the user and started: its
-        directory, the text typed, and its job file."""
-        run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, 'sh')
+    def start(self, *blocks, edit=lambda text: text, shell='sh'):
+        """A run of these blocks in that shell, typed, edited by the user and
+        started: its directory, the text typed, and its job file."""
+        run = self.running.prepare({'pane_id': 'w3:p1'}, {'pane_id': 'w3:p2'}, shell)
         text = self.running.typed(run, list(blocks))
         out = self.enter(edit(text))
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -1190,6 +1190,23 @@ class Running(unittest.TestCase):
         self.assertIn('two', pathlib.Path(run, '2', 'tty.log').read_text())
         self.assertEqual(sorted(os.listdir(run)), ['1', '1.sh', '2', '2.sh', 'job', 'run'])
         self.assertEqual(os.listdir(os.path.join(run, '1')), ['tty.log'])
+
+    @unittest.skipUnless(shutil.which('script') and shutil.which('bash'), 'no script or bash')
+    def test_a_step_starts_no_pager_unless_its_block_sets_one(self):
+        """A step has a terminal, where a pager waits for keys. The shell of the
+        pane may export a pager of its own, and so may a startup file that the
+        shell of a step reads, as bash reads $BASH_ENV and zsh ~/.zshenv."""
+        pagers = ('PAGER', 'GIT_PAGER', 'MANPAGER', 'SYSTEMD_PAGER')
+        startup = pathlib.Path(self.room, 'startup')
+        startup.write_text(''.join(f'export {name}=most\n' for name in pagers))
+        show = 'echo ' + ' '.join(f'{name}=${name}' for name in pagers)
+        with unittest.mock.patch.dict(os.environ, dict.fromkeys(pagers, 'less'),
+                                      BASH_ENV=str(startup)):
+            run, _, _ = self.start(show, f'PAGER=more; {show}', shell='bash')
+        self.assertIn('PAGER=cat GIT_PAGER=cat MANPAGER=cat SYSTEMD_PAGER=cat',
+                      pathlib.Path(run, '1', 'tty.log').read_text().splitlines())
+        self.assertIn('PAGER=more GIT_PAGER=cat MANPAGER=cat SYSTEMD_PAGER=cat',
+                      pathlib.Path(run, '2', 'tty.log').read_text().splitlines())
 
     @unittest.skipUnless(shutil.which('script'), 'no script')
     def test_ctrl_c_stops_the_whole_run(self):
